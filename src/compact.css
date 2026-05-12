@@ -1,16 +1,11 @@
 /*
- * Zendesk Views Tweaks — compact.css  (v0.4.0)
+ * Zendesk Views Tweaks — compact.css  (v0.6.0)
  *
- * Minimal baseline for compact mode. Most styling is dynamic now —
- * see content.js (#zvt-density-rules, #zvt-hide-rules, #zvt-order-rules).
- *
- * This file only handles the most jarring out-of-the-box defaults that
- * the user will almost always want when "compact" is on, so there's no
- * unstyled flash before settings load. Per-level overrides win by
- * specificity (they include the [data-zvt-d="N"] attribute).
+ * Minimal baseline gated on body.zvt-compact. Everything else is dynamic:
+ *   #zvt-density-rules, #zvt-hide-rules, #zvt-order-rules,
+ *   #zvt-theme-rules, #zvt-customviews-rules
  */
 
-/* Tighten anchor row vertical spacing baseline. */
 body.zvt-compact a[data-test-id^="views_views-list_item-view-"],
 body.zvt-compact a[data-test-id^="views_views-list_item-folder-"] {
   padding-top: 0 !important;
@@ -18,7 +13,6 @@ body.zvt-compact a[data-test-id^="views_views-list_item-folder-"] {
   min-height: 0 !important;
 }
 
-/* Drop intrinsic LI margin/min-height on tree rows. */
 body.zvt-compact ul[data-test-id="views_views-tree_container"] > li,
 body.zvt-compact ul[data-test-id^="views_views-tree_container-children_"] > li {
   margin-top: 0 !important;
