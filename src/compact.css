@@ -3,59 +3,59 @@
  *
  * Density tweaks for the Zendesk Support views sidebar.
  * Gated by `body.zvt-compact` so it can be toggled live from the popup.
- * Scoped to the views nav container to avoid bleeding into ticket content.
  *
- * If Zendesk changes their DOM, the [data-test-id="views_pane"] selectors
- * may need to be widened. The fallback `nav[aria-label*="iew" i]` covers
- * "Views" / "View" labels case-insensitively.
+ * Real Zendesk DOM (calibrated 2026-05):
+ *   ul[data-test-id^="views_views-tree_container-children_<path>"]
+ *     li (single view item)
+ *       div
+ *         a[data-test-id="views_views-list_item-view-<id>"]
+ *           div  <- has padding: 0 20px 0 12px (the main horizontal padding)
+ *             div ... <text> ... [data-test-id="views_views-list_item_count"]
+ *
+ * Path is encoded in the parent ul's test-id, joined with `::`,
+ * e.g. "Shared::🙋‍♀️ My tickets". Each level of nesting also adds
+ * padding-left: 4px on the ul, which we tighten too.
  */
 
-body.zvt-compact [data-test-id="views_pane"],
-body.zvt-compact nav[aria-label*="iew" i],
-body.zvt-compact .zvt-views-root {
-  font-size: 12px;
-  line-height: 1.25;
+/* Tighten nested tree containers (cumulative left padding per nesting level). */
+body.zvt-compact ul[data-test-id^="views_views-tree_container-children_"] {
+  padding-left: 2px !important;
 }
 
-/* Tighten anchor/row padding for view items. */
-body.zvt-compact [data-test-id="views_pane"] a[href*="/agent/filters/"],
-body.zvt-compact nav[aria-label*="iew" i] a[href*="/agent/filters/"],
-body.zvt-compact .zvt-views-root a[href*="/agent/filters/"] {
-  padding-top: 2px !important;
-  padding-bottom: 2px !important;
+/* The view row itself: kill vertical padding/min-height, snug font metrics. */
+body.zvt-compact a[data-test-id^="views_views-list_item-view-"] {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
   min-height: 0 !important;
+  font-size: 12px !important;
+  line-height: 16px !important;
 }
 
-/* Hide the wrapper row's intrinsic min-height if it has one. */
-body.zvt-compact [data-test-id="views_pane"] [role="listitem"],
-body.zvt-compact nav[aria-label*="iew" i] [role="listitem"],
-body.zvt-compact .zvt-views-root [role="listitem"] {
-  min-height: 0 !important;
+/* The inner padded div (12px left / 20px right by default) is the main culprit
+ * for "huge padding". Tighten both sides so labels sit closer to the edge. */
+body.zvt-compact a[data-test-id^="views_views-list_item-view-"] > div {
+  padding-left: 4px !important;
+  padding-right: 6px !important;
 }
 
-/* Tighten section / category headers. */
-body.zvt-compact [data-test-id="views_pane"] h2,
-body.zvt-compact [data-test-id="views_pane"] h3,
-body.zvt-compact [data-test-id="views_pane"] [role="heading"],
-body.zvt-compact nav[aria-label*="iew" i] h2,
-body.zvt-compact nav[aria-label*="iew" i] h3,
-body.zvt-compact nav[aria-label*="iew" i] [role="heading"],
-body.zvt-compact .zvt-views-root h2,
-body.zvt-compact .zvt-views-root h3,
-body.zvt-compact .zvt-views-root [role="heading"] {
+/* Count badge: smaller and closer to the title. */
+body.zvt-compact [data-test-id="views_views-list_item_count"] {
   font-size: 11px !important;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-top: 6px !important;
-  margin-bottom: 2px !important;
-  padding-top: 2px !important;
-  padding-bottom: 2px !important;
+  line-height: 14px !important;
+  margin-left: 4px !important;
 }
 
-/* Reduce icon sizes if any sit inline with view rows. */
-body.zvt-compact [data-test-id="views_pane"] svg,
-body.zvt-compact nav[aria-label*="iew" i] svg,
-body.zvt-compact .zvt-views-root svg {
-  width: 14px;
-  height: 14px;
+/* Inline icons inside view rows. */
+body.zvt-compact a[data-test-id^="views_views-list_item-view-"] svg {
+  width: 12px !important;
+  height: 12px !important;
 }
+
+/* The leaf `<li>` rows have no intrinsic min-height, but force it just in case
+ * Zendesk adds margins later. */
+body.zvt-compact ul[data-test-id^="views_views-tree_container-children_"] > li {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  min-height: 0 !important;
+}
+

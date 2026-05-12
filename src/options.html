@@ -33,9 +33,11 @@
           <input
             type="search"
             id="search"
-            placeholder="Search views…"
+            placeholder="Search views or groups…"
             autocomplete="off"
           />
+          <button type="button" id="expand-all" title="Expand all groups">Expand all</button>
+          <button type="button" id="collapse-all" title="Collapse all groups">Collapse all</button>
           <button type="button" id="show-all">Show all</button>
           <button type="button" id="hide-all">Hide all</button>
           <button type="button" id="rescan">Refresh from open Zendesk tab</button>
@@ -43,7 +45,7 @@
 
         <div id="status" class="status" role="status" aria-live="polite"></div>
 
-        <ul id="view-list" class="view-list" hidden></ul>
+        <div id="tree" class="tree" hidden></div>
 
         <div id="empty" class="empty" hidden>
           <p>

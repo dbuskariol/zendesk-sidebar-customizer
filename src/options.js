@@ -1,12 +1,13 @@
 /*
  * Zendesk Views Tweaks — options.js
  *
- * Reads/writes:
- *   - chrome.storage.sync.settings  (enabled, compact, hiddenViewIds[])
- *   - chrome.storage.local.discoveredViews  (read for the list)
+ * Renders the discovered views as a nested tree, grouped by `groupPath`
+ * (which the content script captures from each view's enclosing
+ * ul[data-test-id^="views_views-tree_container-children_<path>"]).
  *
- * Sends "zvt:rescan" to any open github.zendesk.com tab when the user clicks
- * Refresh from open Zendesk tab.
+ * Storage:
+ *   - chrome.storage.sync.settings  { enabled, compact, hiddenViewIds: string[] }
+ *   - chrome.storage.local.discoveredViews  [{ id, title, href, groupPath, lastSeenAt }]
  */
 
 "use strict";
@@ -24,11 +25,13 @@ const els = {
   enabled: document.getElementById("enabled"),
   compact: document.getElementById("compact"),
   search: document.getElementById("search"),
+  expandAll: document.getElementById("expand-all"),
+  collapseAll: document.getElementById("collapse-all"),
   showAll: document.getElementById("show-all"),
   hideAll: document.getElementById("hide-all"),
   rescan: document.getElementById("rescan"),
   status: document.getElementById("status"),
-  list: document.getElementById("view-list"),
+  tree: document.getElementById("tree"),
   empty: document.getElementById("empty"),
   manualForm: document.getElementById("manual-add-form"),
   manualInput: document.getElementById("manual-add-input"),
@@ -37,7 +40,10 @@ const els = {
 };
 
 let settings = { ...DEFAULT_SETTINGS };
-let views = []; // {id, title, href, lastSeenAt}
+let views = []; // { id, title, href, groupPath, lastSeenAt }
+// Persisted-in-memory expanded state of group paths during this session.
+const expandedPaths = new Set();
+let allExpandedHinted = false;
 
 function loadSettings() {
   return new Promise((resolve) => {
@@ -76,65 +82,222 @@ function setHidden(id, hidden) {
   settings.hiddenViewIds = Array.from(set).sort();
 }
 
+/* ----------------------------- tree building ---------------------------- */
+
+function buildTree(filtered) {
+  // Root node: { name, path: [...], children: Map<name, node>, views: [] }
+  const root = { name: "", path: [], children: new Map(), views: [] };
+  for (const v of filtered) {
+    let node = root;
+    const path = Array.isArray(v.groupPath) ? v.groupPath : [];
+    for (const seg of path) {
+      if (!node.children.has(seg)) {
+        node.children.set(seg, {
+          name: seg,
+          path: [...node.path, seg],
+          children: new Map(),
+          views: [],
+        });
+      }
+      node = node.children.get(seg);
+    }
+    node.views.push(v);
+  }
+  return root;
+}
+
+function nodeStats(node) {
+  let total = node.views.length;
+  let hidden = node.views.filter((v) => isHidden(v.id)).length;
+  for (const child of node.children.values()) {
+    const c = nodeStats(child);
+    total += c.total;
+    hidden += c.hidden;
+  }
+  return { total, hidden, visible: total - hidden };
+}
+
+function collectViewIdsInNode(node) {
+  const ids = node.views.map((v) => String(v.id));
+  for (const child of node.children.values()) {
+    ids.push(...collectViewIdsInNode(child));
+  }
+  return ids;
+}
+
+/* ------------------------------ rendering ------------------------------- */
+
+function pathKey(path) {
+  return path.join("::");
+}
+
+function renderTree(filteredViews, hasQuery) {
+  const root = buildTree(filteredViews);
+  els.tree.innerHTML = "";
+  if (!root.views.length && root.children.size === 0) {
+    els.tree.hidden = true;
+    return;
+  }
+  els.tree.hidden = false;
+
+  const frag = document.createDocumentFragment();
+
+  // Render any orphan views (no groupPath) at the very top.
+  if (root.views.length) {
+    const ul = document.createElement("ul");
+    ul.className = "tree-leaf-list";
+    for (const v of sortViews(root.views)) ul.appendChild(renderLeaf(v));
+    frag.appendChild(ul);
+  }
+
+  for (const child of sortChildren(root.children)) {
+    frag.appendChild(renderGroup(child, hasQuery));
+  }
+  els.tree.appendChild(frag);
+}
+
+function sortChildren(map) {
+  return Array.from(map.values()).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  );
+}
+
+function sortViews(arr) {
+  return arr.slice().sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+}
+
+function renderGroup(node, hasQuery) {
+  const stats = nodeStats(node);
+  const details = document.createElement("details");
+  details.className = "group";
+  // Open if user hinted, or auto-open while searching, or by default on first render.
+  const key = pathKey(node.path);
+  const open = hasQuery || expandedPaths.has(key) || !allExpandedHinted;
+  if (open) details.open = true;
+  details.dataset.path = key;
+  details.addEventListener("toggle", () => {
+    if (details.open) expandedPaths.add(key);
+    else expandedPaths.delete(key);
+  });
+
+  const summary = document.createElement("summary");
+  summary.className = "group-summary";
+
+  const allHidden = stats.total > 0 && stats.hidden === stats.total;
+  const noneHidden = stats.hidden === 0;
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.indeterminate = !allHidden && !noneHidden;
+  cb.checked = noneHidden; // checked = all visible
+  cb.title = "Toggle entire group";
+  cb.addEventListener("click", (e) => e.stopPropagation());
+  cb.addEventListener("change", async () => {
+    const ids = collectViewIdsInNode(node);
+    const target = cb.checked; // true = make all visible
+    const set = new Set(settings.hiddenViewIds.map(String));
+    for (const id of ids) {
+      if (target) set.delete(id);
+      else set.add(id);
+    }
+    settings.hiddenViewIds = Array.from(set).sort();
+    await saveSettings();
+    render();
+  });
+
+  const name = document.createElement("span");
+  name.className = "group-name";
+  name.textContent = node.name;
+
+  const counts = document.createElement("span");
+  counts.className = "group-counts";
+  counts.textContent =
+    stats.hidden > 0
+      ? `${stats.visible}/${stats.total}`
+      : `${stats.total}`;
+  if (stats.hidden > 0 && stats.visible === 0) counts.classList.add("all-hidden");
+
+  summary.appendChild(cb);
+  summary.appendChild(name);
+  summary.appendChild(counts);
+  details.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "group-body";
+
+  for (const child of sortChildren(node.children)) {
+    body.appendChild(renderGroup(child, hasQuery));
+  }
+  if (node.views.length) {
+    const ul = document.createElement("ul");
+    ul.className = "tree-leaf-list";
+    for (const v of sortViews(node.views)) ul.appendChild(renderLeaf(v));
+    body.appendChild(ul);
+  }
+
+  details.appendChild(body);
+  return details;
+}
+
+function renderLeaf(v) {
+  const li = document.createElement("li");
+  const hidden = isHidden(v.id);
+  if (hidden) li.classList.add("hidden-row");
+
+  const label = document.createElement("label");
+
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = !hidden;
+  cb.dataset.id = v.id;
+  cb.addEventListener("change", onToggleView);
+
+  const title = document.createElement("span");
+  title.className = "title";
+  title.textContent = v.title || `View ${v.id}`;
+
+  const id = document.createElement("span");
+  id.className = "id";
+  id.textContent = v.id;
+
+  label.appendChild(cb);
+  label.appendChild(title);
+  label.appendChild(id);
+  li.appendChild(label);
+  return li;
+}
+
+/* ------------------------------- main render --------------------------- */
+
+function matchesQuery(v, q) {
+  if (!q) return true;
+  if ((v.title || "").toLowerCase().includes(q)) return true;
+  if (String(v.id).includes(q)) return true;
+  const path = (v.groupPath || []).join(" / ").toLowerCase();
+  return path.includes(q);
+}
+
 function render() {
   els.enabled.checked = !!settings.enabled;
   els.compact.checked = !!settings.compact;
 
   const q = (els.search.value || "").trim().toLowerCase();
-  const filtered = views
-    .slice()
-    .sort((a, b) => (a.title || "").localeCompare(b.title || ""))
-    .filter((v) => {
-      if (!q) return true;
-      return (
-        (v.title || "").toLowerCase().includes(q) ||
-        String(v.id).includes(q)
-      );
-    });
+  const filtered = views.filter((v) => matchesQuery(v, q));
 
   if (views.length === 0) {
-    els.list.hidden = true;
+    els.tree.hidden = true;
     els.empty.hidden = false;
     els.status.textContent = "0 views discovered.";
-  } else {
-    els.empty.hidden = true;
-    els.list.hidden = false;
-    els.status.textContent =
-      `${views.length} view${views.length === 1 ? "" : "s"} discovered, ` +
-      `${settings.hiddenViewIds.length} hidden.` +
-      (q ? ` Showing ${filtered.length}.` : "");
-
-    els.list.innerHTML = "";
-    const frag = document.createDocumentFragment();
-    for (const v of filtered) {
-      const li = document.createElement("li");
-      const hidden = isHidden(v.id);
-      if (hidden) li.classList.add("hidden-row");
-
-      const label = document.createElement("label");
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = !hidden; // checked = visible
-      cb.dataset.id = v.id;
-      cb.addEventListener("change", onToggleView);
-
-      const title = document.createElement("span");
-      title.className = "title";
-      title.textContent = v.title || `View ${v.id}`;
-
-      const id = document.createElement("span");
-      id.className = "id";
-      id.textContent = v.id;
-
-      label.appendChild(cb);
-      label.appendChild(title);
-      label.appendChild(id);
-      li.appendChild(label);
-      frag.appendChild(li);
-    }
-    els.list.appendChild(frag);
+    return;
   }
+  els.empty.hidden = true;
+  els.status.textContent =
+    `${views.length} view${views.length === 1 ? "" : "s"} discovered, ` +
+    `${settings.hiddenViewIds.length} hidden.` +
+    (q ? ` Showing ${filtered.length}.` : "");
+  renderTree(filtered, q.length > 0);
 }
+
+/* ------------------------------- handlers ------------------------------ */
 
 async function onToggleView(e) {
   const id = e.currentTarget.dataset.id;
@@ -145,25 +308,39 @@ async function onToggleView(e) {
 }
 
 async function onShowAll() {
-  settings.hiddenViewIds = [];
+  // Show all currently filtered views (or all if no filter).
+  const q = (els.search.value || "").trim().toLowerCase();
+  const target = views.filter((v) => matchesQuery(v, q));
+  const set = new Set(settings.hiddenViewIds.map(String));
+  for (const v of target) set.delete(String(v.id));
+  settings.hiddenViewIds = Array.from(set).sort();
   await saveSettings();
   render();
 }
 
 async function onHideAll() {
-  // Hide every discovered view (matching the current search, if any).
   const q = (els.search.value || "").trim().toLowerCase();
-  const target = views.filter((v) => {
-    if (!q) return true;
-    return (
-      (v.title || "").toLowerCase().includes(q) ||
-      String(v.id).includes(q)
-    );
-  });
+  const target = views.filter((v) => matchesQuery(v, q));
   const set = new Set(settings.hiddenViewIds.map(String));
   for (const v of target) set.add(String(v.id));
   settings.hiddenViewIds = Array.from(set).sort();
   await saveSettings();
+  render();
+}
+
+function setAllExpanded(open) {
+  allExpandedHinted = true;
+  expandedPaths.clear();
+  if (open) {
+    // Walk the full tree and expand every group.
+    const root = buildTree(views);
+    const stack = Array.from(root.children.values());
+    while (stack.length) {
+      const node = stack.pop();
+      expandedPaths.add(pathKey(node.path));
+      stack.push(...node.children.values());
+    }
+  }
   render();
 }
 
@@ -173,10 +350,6 @@ function onToggleSetting(key) {
     await saveSettings();
     render();
   };
-}
-
-function onSearch() {
-  render();
 }
 
 async function onRescan() {
@@ -193,15 +366,14 @@ async function onRescan() {
       const res = await chrome.tabs.sendMessage(t.id, { type: "zvt:rescan" });
       if (res && res.ok) ok++;
     } catch {
-      // Tab loaded before extension installed/updated — content script not present.
+      /* content script not present in that tab */
     }
   }
   if (ok === 0) {
     els.status.textContent =
-      "Found Zendesk tabs but couldn't reach the content script. Try reloading the Zendesk tab.";
+      "Found Zendesk tab(s) but couldn't reach the content script. Try reloading the Zendesk tab.";
     return;
   }
-  // Give the content script a beat to discover and persist, then refresh list.
   setTimeout(async () => {
     await loadDiscovered();
     render();
@@ -227,19 +399,22 @@ async function onManualAdd(e) {
   }
   const title = (els.manualTitle.value || "").trim() || `View ${id}`;
   const href = `/agent/filters/${id}`;
-
-  // Add to discovered (so it appears in the list) and to hidden (since the
-  // user is presumably adding it to hide it).
   const already = views.find((v) => String(v.id) === id);
   if (!already) {
-    views.push({ id, title, href, lastSeenAt: Date.now(), manual: true });
+    views.push({
+      id,
+      title,
+      href,
+      groupPath: ["Manually added"],
+      lastSeenAt: Date.now(),
+      manual: true,
+    });
     await new Promise((resolve) =>
       chrome.storage.local.set({ discoveredViews: views }, resolve)
     );
   }
   setHidden(id, true);
   await saveSettings();
-
   els.manualInput.value = "";
   els.manualTitle.value = "";
   els.manualStatus.textContent = `Added view ${id} to hidden list.`;
@@ -249,13 +424,14 @@ async function onManualAdd(e) {
 function bind() {
   els.enabled.addEventListener("change", onToggleSetting("enabled"));
   els.compact.addEventListener("change", onToggleSetting("compact"));
-  els.search.addEventListener("input", onSearch);
+  els.search.addEventListener("input", render);
+  els.expandAll.addEventListener("click", () => setAllExpanded(true));
+  els.collapseAll.addEventListener("click", () => setAllExpanded(false));
   els.showAll.addEventListener("click", onShowAll);
   els.hideAll.addEventListener("click", onHideAll);
   els.rescan.addEventListener("click", onRescan);
   els.manualForm.addEventListener("submit", onManualAdd);
 
-  // Live update if storage changes elsewhere (e.g. popup toggles, content script writes).
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "sync" && changes.settings) {
       settings = { ...DEFAULT_SETTINGS, ...(changes.settings.newValue || {}) };

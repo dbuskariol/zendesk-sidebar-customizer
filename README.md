@@ -21,7 +21,7 @@ Scoped to `https://github.zendesk.com/*`. Settings sync across devices via `chro
    - Master enable / disable.
    - Compact mode on / off.
    - Open the options page.
-3. The **options page** lists every view the extension has seen, with a checkbox per view (checked = visible). Use the search box to filter, or the show-all / hide-all buttons to bulk toggle.
+3. The **options page** lists every view the extension has seen as a **collapsible tree** that mirrors the Zendesk group hierarchy (e.g. *Shared → My tickets → New and Open*). Each leaf has a checkbox (checked = visible). Each group header has its own checkbox to bulk-toggle the entire group.
 4. Don't see a view yet? It hasn't been rendered. Either open it in Zendesk once (it'll appear in the list), use the **"Refresh from open Zendesk tab"** button, or paste its URL or numeric ID into the **manual add** field.
 
 Changes apply live — no page refresh needed.
@@ -29,20 +29,24 @@ Changes apply live — no page refresh needed.
 ## How it works
 
 - A content script runs on `github.zendesk.com`. It owns one `<style id="zvt-hide-rules">` element in the page head; hidden views are CSS rules in that stylesheet, not DOM mutations. This is immune to Zendesk's React re-renders.
-- View identity comes from the URL filter ID (`/agent/filters/<id>`), parsed with a strict regex. Titles can change; numeric IDs are stable.
-- Discovery uses a small `MutationObserver` scoped to the sidebar nav, debounced via `requestAnimationFrame`. New views land in `chrome.storage.local.discoveredViews` automatically.
-- Compact mode is plain CSS gated on `body.zvt-compact`, scoped tightly to the views sidebar so it can't bleed into ticket content.
+- View identity comes from the stable `data-test-id="views_views-list_item-view-<id>"` attribute on each anchor. URL-based parsing is kept as a fallback.
+- Group hierarchy comes from the enclosing `ul[data-test-id^="views_views-tree_container-children_<path>"]`, where `<path>` is joined with `::` (e.g. `Shared::🙋‍♀️ My tickets`). The options page renders this as a collapsible tree and lets you bulk-toggle entire groups.
+- Discovery uses a small `MutationObserver` scoped to the views pane (the parent of the topmost tree container), debounced via `requestAnimationFrame`. New views land in `chrome.storage.local.discoveredViews` automatically.
+- Compact mode is plain CSS gated on `body.zvt-compact`, targeting only the views sidebar's stable `data-test-id` attributes — it can't bleed into ticket content.
 
 ## Calibration / debugging
 
 If Zendesk changes their DOM and the sidebar isn't found:
 
 1. On a Zendesk page, open devtools and inspect `window.__zvt`. It exposes:
-   - `nav` — the detected sidebar nav element (or `null`).
-   - `discovered` — the in-memory map of `{id, title, href}` entries seen this session.
-   - `selectors` — the selector strings the script tried.
+   - `pane` — the detected views pane element (or `null`).
+   - `discovered` — the in-memory list of `{id, title, href, groupPath}` entries seen this session.
+   - `prefixes` — the `data-test-id` prefixes the script keys off of:
+     - `views_views-list_item-view-` (anchor)
+     - `views_views-tree_container-children_` (group container `ul`, with the path joined by `::` after the prefix)
+     - `views_views-list_item_count` (count badge inside a row)
    - `rescan()` — force a re-scan.
-2. Find the new sidebar root and update the selector list in `src/content.js` (top of file, `SIDEBAR_NAV_SELECTORS`).
+2. If those prefixes change, update them at the top of `src/content.js` and the matching selectors in `src/compact.css`.
 3. Reload the extension at `chrome://extensions` and reload the Zendesk tab.
 
 ## Smoke test
