@@ -1,13 +1,13 @@
 /*
- * Zendesk Views Tweaks — options.js
- *
- * Renders the discovered views as a nested tree, grouped by `groupPath`
- * (which the content script captures from each view's enclosing
- * ul[data-test-id^="views_views-tree_container-children_<path>"]).
+ * Zendesk Views Tweaks — options.js  (v0.3.0)
  *
  * Storage:
- *   - chrome.storage.sync.settings  { enabled, compact, hiddenViewIds: string[] }
- *   - chrome.storage.local.discoveredViews  [{ id, title, href, groupPath, lastSeenAt }]
+ *   chrome.storage.sync.settings = {
+ *     enabled, compact, hiddenViewIds[], hiddenGroupPaths[],
+ *     levelFontSizes: { "1": 13, ... }, levelIndents: { "2": 6, ... }
+ *   }
+ *   chrome.storage.local.discoveredViews = [{ id, title, href, groupPath, depth, lastSeenAt }]
+ *   chrome.storage.local.discoveredGroups = [{ path, name, depth, lastSeenAt }]
  */
 
 "use strict";
@@ -19,7 +19,19 @@ const DEFAULT_SETTINGS = {
   enabled: true,
   compact: true,
   hiddenViewIds: [],
+  hiddenGroupPaths: [],
+  levelFontSizes: {},
+  levelIndents: {},
 };
+
+// Suggested defaults applied when the user hits "Apply suggested defaults".
+const SUGGESTED_FONT_SIZES = { 1: 14, 2: 13, 3: 12, 4: 11, 5: 11 };
+const SUGGESTED_INDENTS = { 2: 6, 3: 6, 4: 4, 5: 4 };
+
+const FONT_MIN = 8;
+const FONT_MAX = 20;
+const INDENT_MIN = 0;
+const INDENT_MAX = 32;
 
 const els = {
   enabled: document.getElementById("enabled"),
@@ -33,6 +45,9 @@ const els = {
   status: document.getElementById("status"),
   tree: document.getElementById("tree"),
   empty: document.getElementById("empty"),
+  densityGrid: document.getElementById("density-grid"),
+  densityDefaults: document.getElementById("density-defaults"),
+  densityReset: document.getElementById("density-reset"),
   manualForm: document.getElementById("manual-add-form"),
   manualInput: document.getElementById("manual-add-input"),
   manualTitle: document.getElementById("manual-add-title"),
@@ -40,16 +55,21 @@ const els = {
 };
 
 let settings = { ...DEFAULT_SETTINGS };
-let views = []; // { id, title, href, groupPath, lastSeenAt }
-// Persisted-in-memory expanded state of group paths during this session.
+let views = [];
+let groups = [];
 const expandedPaths = new Set();
 let allExpandedHinted = false;
+
+/* ------------------------------- storage ------------------------------- */
 
 function loadSettings() {
   return new Promise((resolve) => {
     chrome.storage.sync.get({ settings: null }, (res) => {
       settings = { ...DEFAULT_SETTINGS, ...(res.settings || {}) };
       if (!Array.isArray(settings.hiddenViewIds)) settings.hiddenViewIds = [];
+      if (!Array.isArray(settings.hiddenGroupPaths)) settings.hiddenGroupPaths = [];
+      if (!settings.levelFontSizes) settings.levelFontSizes = {};
+      if (!settings.levelIndents) settings.levelIndents = {};
       resolve();
     });
   });
@@ -57,24 +77,28 @@ function loadSettings() {
 
 function loadDiscovered() {
   return new Promise((resolve) => {
-    chrome.storage.local.get({ discoveredViews: [] }, (res) => {
-      views = Array.isArray(res.discoveredViews) ? res.discoveredViews : [];
-      resolve();
-    });
+    chrome.storage.local.get(
+      { discoveredViews: [], discoveredGroups: [] },
+      (res) => {
+        views = Array.isArray(res.discoveredViews) ? res.discoveredViews : [];
+        groups = Array.isArray(res.discoveredGroups) ? res.discoveredGroups : [];
+        resolve();
+      }
+    );
   });
 }
 
 function saveSettings() {
-  return new Promise((resolve) => {
-    chrome.storage.sync.set({ settings }, resolve);
-  });
+  return new Promise((resolve) => chrome.storage.sync.set({ settings }, resolve));
 }
 
-function isHidden(id) {
+/* --------------------------- helpers / state --------------------------- */
+
+function isViewHidden(id) {
   return settings.hiddenViewIds.includes(String(id));
 }
 
-function setHidden(id, hidden) {
+function setViewHidden(id, hidden) {
   const sid = String(id);
   const set = new Set(settings.hiddenViewIds.map(String));
   if (hidden) set.add(sid);
@@ -82,15 +106,42 @@ function setHidden(id, hidden) {
   settings.hiddenViewIds = Array.from(set).sort();
 }
 
-/* ----------------------------- tree building ---------------------------- */
+function isGroupHidden(path) {
+  return settings.hiddenGroupPaths.includes(path);
+}
 
-function buildTree(filtered) {
-  // Root node: { name, path: [...], children: Map<name, node>, views: [] }
+function setGroupHidden(path, hidden) {
+  const set = new Set(settings.hiddenGroupPaths);
+  if (hidden) set.add(path);
+  else set.delete(path);
+  settings.hiddenGroupPaths = Array.from(set).sort();
+}
+
+function pathKey(path) {
+  return path.join("::");
+}
+
+function maxDiscoveredDepth() {
+  let max = 0;
+  for (const v of views) max = Math.max(max, Number(v.depth) || 0);
+  for (const g of groups) max = Math.max(max, Number(g.depth) || 0);
+  return max;
+}
+
+function clamp(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+/* ------------------------------ tree build ----------------------------- */
+
+function buildTree(filteredViews, allGroups) {
+  // root.children: Map<name, node>
+  // Each node: { name, path: [...], children, views, groupPath: "::"-joined string }
   const root = { name: "", path: [], children: new Map(), views: [] };
-  for (const v of filtered) {
+
+  function ensureGroup(pathSegments) {
     let node = root;
-    const path = Array.isArray(v.groupPath) ? v.groupPath : [];
-    for (const seg of path) {
+    for (const seg of pathSegments) {
       if (!node.children.has(seg)) {
         node.children.set(seg, {
           name: seg,
@@ -101,6 +152,18 @@ function buildTree(filtered) {
       }
       node = node.children.get(seg);
     }
+    return node;
+  }
+
+  // Seed groups from discoveredGroups so empty groups still appear.
+  for (const g of allGroups) {
+    if (!g || !g.path) continue;
+    ensureGroup(g.path.split("::").filter(Boolean));
+  }
+
+  // Place views into their group.
+  for (const v of filteredViews) {
+    const node = ensureGroup(Array.isArray(v.groupPath) ? v.groupPath : []);
     node.views.push(v);
   }
   return root;
@@ -108,7 +171,7 @@ function buildTree(filtered) {
 
 function nodeStats(node) {
   let total = node.views.length;
-  let hidden = node.views.filter((v) => isHidden(v.id)).length;
+  let hidden = node.views.filter((v) => isViewHidden(v.id)).length;
   for (const child of node.children.values()) {
     const c = nodeStats(child);
     total += c.total;
@@ -117,22 +180,26 @@ function nodeStats(node) {
   return { total, hidden, visible: total - hidden };
 }
 
-function collectViewIdsInNode(node) {
+function collectLeafIds(node) {
   const ids = node.views.map((v) => String(v.id));
   for (const child of node.children.values()) {
-    ids.push(...collectViewIdsInNode(child));
+    ids.push(...collectLeafIds(child));
   }
   return ids;
 }
 
-/* ------------------------------ rendering ------------------------------- */
+/* ------------------------------ rendering ------------------------------ */
 
-function pathKey(path) {
-  return path.join("::");
+function sortChildren(map) {
+  return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function sortViews(arr) {
+  return arr.slice().sort((a, b) => (a.title || "").localeCompare(b.title || ""));
 }
 
 function renderTree(filteredViews, hasQuery) {
-  const root = buildTree(filteredViews);
+  const root = buildTree(filteredViews, groups);
   els.tree.innerHTML = "";
   if (!root.views.length && root.children.size === 0) {
     els.tree.hidden = true;
@@ -141,59 +208,75 @@ function renderTree(filteredViews, hasQuery) {
   els.tree.hidden = false;
 
   const frag = document.createDocumentFragment();
-
-  // Render any orphan views (no groupPath) at the very top.
   if (root.views.length) {
     const ul = document.createElement("ul");
     ul.className = "tree-leaf-list";
     for (const v of sortViews(root.views)) ul.appendChild(renderLeaf(v));
     frag.appendChild(ul);
   }
-
   for (const child of sortChildren(root.children)) {
     frag.appendChild(renderGroup(child, hasQuery));
   }
   els.tree.appendChild(frag);
 }
 
-function sortChildren(map) {
-  return Array.from(map.values()).sort((a, b) =>
-    a.name.localeCompare(b.name)
-  );
-}
-
-function sortViews(arr) {
-  return arr.slice().sort((a, b) => (a.title || "").localeCompare(b.title || ""));
-}
-
 function renderGroup(node, hasQuery) {
   const stats = nodeStats(node);
+  const groupPathStr = pathKey(node.path);
+  const groupHidden = isGroupHidden(groupPathStr);
+
   const details = document.createElement("details");
   details.className = "group";
-  // Open if user hinted, or auto-open while searching, or by default on first render.
-  const key = pathKey(node.path);
-  const open = hasQuery || expandedPaths.has(key) || !allExpandedHinted;
+  if (groupHidden) details.classList.add("group-hidden");
+  const open = hasQuery || expandedPaths.has(groupPathStr) || !allExpandedHinted;
   if (open) details.open = true;
-  details.dataset.path = key;
+  details.dataset.path = groupPathStr;
   details.addEventListener("toggle", () => {
-    if (details.open) expandedPaths.add(key);
-    else expandedPaths.delete(key);
+    if (details.open) expandedPaths.add(groupPathStr);
+    else expandedPaths.delete(groupPathStr);
   });
 
   const summary = document.createElement("summary");
   summary.className = "group-summary";
 
-  const allHidden = stats.total > 0 && stats.hidden === stats.total;
-  const noneHidden = stats.hidden === 0;
-  const cb = document.createElement("input");
-  cb.type = "checkbox";
-  cb.indeterminate = !allHidden && !noneHidden;
-  cb.checked = noneHidden; // checked = all visible
-  cb.title = "Toggle entire group";
-  cb.addEventListener("click", (e) => e.stopPropagation());
-  cb.addEventListener("change", async () => {
-    const ids = collectViewIdsInNode(node);
-    const target = cb.checked; // true = make all visible
+  // Group visibility checkbox: checked = group visible.
+  const visCb = document.createElement("input");
+  visCb.type = "checkbox";
+  visCb.checked = !groupHidden;
+  visCb.title = groupHidden ? "Show this entire group" : "Hide this entire group";
+  visCb.addEventListener("click", (e) => e.stopPropagation());
+  visCb.addEventListener("change", async () => {
+    setGroupHidden(groupPathStr, !visCb.checked);
+    await saveSettings();
+    render();
+  });
+
+  const name = document.createElement("span");
+  name.className = "group-name";
+  name.textContent = node.name + (groupHidden ? " (hidden)" : "");
+
+  const counts = document.createElement("span");
+  counts.className = "group-counts";
+  if (stats.total > 0) {
+    counts.textContent =
+      stats.hidden > 0 ? `${stats.visible}/${stats.total}` : `${stats.total}`;
+    if (stats.hidden > 0 && stats.visible === 0) counts.classList.add("all-hidden");
+  } else {
+    counts.textContent = "(empty)";
+    counts.classList.add("empty-group");
+  }
+
+  // Bulk toggle of leaves inside this group (does NOT touch group hide).
+  const bulkBtn = document.createElement("button");
+  bulkBtn.type = "button";
+  bulkBtn.className = "group-bulk";
+  bulkBtn.textContent = stats.hidden < stats.total ? "Hide leaves" : "Show leaves";
+  bulkBtn.title = "Toggle visibility of every leaf view inside this group";
+  bulkBtn.addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const ids = collectLeafIds(node);
+    const target = !(stats.hidden < stats.total); // true = show all, false = hide all
     const set = new Set(settings.hiddenViewIds.map(String));
     for (const id of ids) {
       if (target) set.delete(id);
@@ -204,26 +287,14 @@ function renderGroup(node, hasQuery) {
     render();
   });
 
-  const name = document.createElement("span");
-  name.className = "group-name";
-  name.textContent = node.name;
-
-  const counts = document.createElement("span");
-  counts.className = "group-counts";
-  counts.textContent =
-    stats.hidden > 0
-      ? `${stats.visible}/${stats.total}`
-      : `${stats.total}`;
-  if (stats.hidden > 0 && stats.visible === 0) counts.classList.add("all-hidden");
-
-  summary.appendChild(cb);
+  summary.appendChild(visCb);
   summary.appendChild(name);
   summary.appendChild(counts);
+  if (stats.total > 0) summary.appendChild(bulkBtn);
   details.appendChild(summary);
 
   const body = document.createElement("div");
   body.className = "group-body";
-
   for (const child of sortChildren(node.children)) {
     body.appendChild(renderGroup(child, hasQuery));
   }
@@ -233,18 +304,16 @@ function renderGroup(node, hasQuery) {
     for (const v of sortViews(node.views)) ul.appendChild(renderLeaf(v));
     body.appendChild(ul);
   }
-
   details.appendChild(body);
   return details;
 }
 
 function renderLeaf(v) {
   const li = document.createElement("li");
-  const hidden = isHidden(v.id);
+  const hidden = isViewHidden(v.id);
   if (hidden) li.classList.add("hidden-row");
 
   const label = document.createElement("label");
-
   const cb = document.createElement("input");
   cb.type = "checkbox";
   cb.checked = !hidden;
@@ -266,14 +335,111 @@ function renderLeaf(v) {
   return li;
 }
 
-/* ------------------------------- main render --------------------------- */
+/* ----------------------------- density panel --------------------------- */
+
+function renderDensity() {
+  els.densityGrid.innerHTML = "";
+
+  const detected = maxDiscoveredDepth();
+  const max = Math.max(detected + 1, 5);
+
+  const head = document.createElement("div");
+  head.className = "density-head";
+  head.innerHTML = `
+    <span></span>
+    <span class="hcell">Font size (px)</span>
+    <span class="hcell">Indent (px)</span>
+  `;
+  els.densityGrid.appendChild(head);
+
+  for (let depth = 1; depth <= max; depth++) {
+    const row = document.createElement("div");
+    row.className = "density-row";
+    const label = document.createElement("span");
+    label.className = "level-label";
+    label.textContent = `Level ${depth}`;
+    if (depth > detected) label.classList.add("level-future");
+
+    const fontInput = document.createElement("input");
+    fontInput.type = "number";
+    fontInput.min = String(FONT_MIN);
+    fontInput.max = String(FONT_MAX);
+    fontInput.placeholder = "—";
+    const fv = settings.levelFontSizes[String(depth)];
+    fontInput.value = fv != null ? String(fv) : "";
+    fontInput.addEventListener("change", async () => {
+      const raw = fontInput.value.trim();
+      if (raw === "") {
+        delete settings.levelFontSizes[String(depth)];
+      } else {
+        const n = Number(raw);
+        if (!Number.isFinite(n)) return;
+        settings.levelFontSizes[String(depth)] = clamp(Math.round(n), FONT_MIN, FONT_MAX);
+        fontInput.value = String(settings.levelFontSizes[String(depth)]);
+      }
+      await saveSettings();
+    });
+
+    const indentInput = document.createElement("input");
+    indentInput.type = "number";
+    indentInput.min = String(INDENT_MIN);
+    indentInput.max = String(INDENT_MAX);
+    indentInput.placeholder = depth === 1 ? "n/a" : "—";
+    if (depth === 1) {
+      // Indent setting only meaningful for nested levels (depth ≥ 2).
+      indentInput.disabled = true;
+    } else {
+      const iv = settings.levelIndents[String(depth)];
+      indentInput.value = iv != null ? String(iv) : "";
+      indentInput.addEventListener("change", async () => {
+        const raw = indentInput.value.trim();
+        if (raw === "") {
+          delete settings.levelIndents[String(depth)];
+        } else {
+          const n = Number(raw);
+          if (!Number.isFinite(n)) return;
+          settings.levelIndents[String(depth)] = clamp(Math.round(n), INDENT_MIN, INDENT_MAX);
+          indentInput.value = String(settings.levelIndents[String(depth)]);
+        }
+        await saveSettings();
+      });
+    }
+
+    row.appendChild(label);
+    row.appendChild(fontInput);
+    row.appendChild(indentInput);
+    els.densityGrid.appendChild(row);
+  }
+
+  const note = document.createElement("p");
+  note.className = "sub density-note";
+  note.textContent = detected
+    ? `Detected max depth in your sidebar: ${detected}. Levels beyond that are configurable for future-proofing.`
+    : "Visit Zendesk to populate detected depth.";
+  els.densityGrid.appendChild(note);
+}
+
+async function applyDensityDefaults() {
+  settings.levelFontSizes = { ...SUGGESTED_FONT_SIZES };
+  settings.levelIndents = { ...SUGGESTED_INDENTS };
+  await saveSettings();
+  renderDensity();
+}
+
+async function clearDensity() {
+  settings.levelFontSizes = {};
+  settings.levelIndents = {};
+  await saveSettings();
+  renderDensity();
+}
+
+/* --------------------------- main render ------------------------------- */
 
 function matchesQuery(v, q) {
   if (!q) return true;
   if ((v.title || "").toLowerCase().includes(q)) return true;
   if (String(v.id).includes(q)) return true;
-  const path = (v.groupPath || []).join(" / ").toLowerCase();
-  return path.includes(q);
+  return (v.groupPath || []).join(" / ").toLowerCase().includes(q);
 }
 
 function render() {
@@ -283,18 +449,22 @@ function render() {
   const q = (els.search.value || "").trim().toLowerCase();
   const filtered = views.filter((v) => matchesQuery(v, q));
 
-  if (views.length === 0) {
+  if (views.length === 0 && groups.length === 0) {
     els.tree.hidden = true;
     els.empty.hidden = false;
-    els.status.textContent = "0 views discovered.";
+    els.status.textContent = "0 views, 0 groups discovered.";
+    renderDensity();
     return;
   }
   els.empty.hidden = true;
   els.status.textContent =
-    `${views.length} view${views.length === 1 ? "" : "s"} discovered, ` +
-    `${settings.hiddenViewIds.length} hidden.` +
-    (q ? ` Showing ${filtered.length}.` : "");
+    `${views.length} view${views.length === 1 ? "" : "s"}, ` +
+    `${groups.length} group${groups.length === 1 ? "" : "s"} discovered. ` +
+    `${settings.hiddenViewIds.length} view${settings.hiddenViewIds.length === 1 ? "" : "s"} hidden, ` +
+    `${settings.hiddenGroupPaths.length} group${settings.hiddenGroupPaths.length === 1 ? "" : "s"} hidden.` +
+    (q ? ` Showing ${filtered.length} matched view${filtered.length === 1 ? "" : "s"}.` : "");
   renderTree(filtered, q.length > 0);
+  renderDensity();
 }
 
 /* ------------------------------- handlers ------------------------------ */
@@ -302,23 +472,26 @@ function render() {
 async function onToggleView(e) {
   const id = e.currentTarget.dataset.id;
   const visible = e.currentTarget.checked;
-  setHidden(id, !visible);
+  setViewHidden(id, !visible);
   await saveSettings();
   render();
 }
 
 async function onShowAll() {
-  // Show all currently filtered views (or all if no filter).
+  // Show every leaf and every group (matching filter).
   const q = (els.search.value || "").trim().toLowerCase();
-  const target = views.filter((v) => matchesQuery(v, q));
+  const targetViews = views.filter((v) => matchesQuery(v, q));
   const set = new Set(settings.hiddenViewIds.map(String));
-  for (const v of target) set.delete(String(v.id));
+  for (const v of targetViews) set.delete(String(v.id));
   settings.hiddenViewIds = Array.from(set).sort();
+  // Always clear all hidden groups when "Show all" is clicked.
+  settings.hiddenGroupPaths = [];
   await saveSettings();
   render();
 }
 
 async function onHideAll() {
+  // Hide every leaf matching the filter (groups are unchanged — use group checkboxes).
   const q = (els.search.value || "").trim().toLowerCase();
   const target = views.filter((v) => matchesQuery(v, q));
   const set = new Set(settings.hiddenViewIds.map(String));
@@ -332,8 +505,7 @@ function setAllExpanded(open) {
   allExpandedHinted = true;
   expandedPaths.clear();
   if (open) {
-    // Walk the full tree and expand every group.
-    const root = buildTree(views);
+    const root = buildTree(views, groups);
     const stack = Array.from(root.children.values());
     while (stack.length) {
       const node = stack.pop();
@@ -366,7 +538,7 @@ async function onRescan() {
       const res = await chrome.tabs.sendMessage(t.id, { type: "zvt:rescan" });
       if (res && res.ok) ok++;
     } catch {
-      /* content script not present in that tab */
+      /* no content script in that tab */
     }
   }
   if (ok === 0) {
@@ -406,6 +578,7 @@ async function onManualAdd(e) {
       title,
       href,
       groupPath: ["Manually added"],
+      depth: 2,
       lastSeenAt: Date.now(),
       manual: true,
     });
@@ -413,7 +586,7 @@ async function onManualAdd(e) {
       chrome.storage.local.set({ discoveredViews: views }, resolve)
     );
   }
-  setHidden(id, true);
+  setViewHidden(id, true);
   await saveSettings();
   els.manualInput.value = "";
   els.manualTitle.value = "";
@@ -431,16 +604,29 @@ function bind() {
   els.hideAll.addEventListener("click", onHideAll);
   els.rescan.addEventListener("click", onRescan);
   els.manualForm.addEventListener("submit", onManualAdd);
+  els.densityDefaults.addEventListener("click", applyDensityDefaults);
+  els.densityReset.addEventListener("click", clearDensity);
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === "sync" && changes.settings) {
       settings = { ...DEFAULT_SETTINGS, ...(changes.settings.newValue || {}) };
+      if (!Array.isArray(settings.hiddenViewIds)) settings.hiddenViewIds = [];
+      if (!Array.isArray(settings.hiddenGroupPaths)) settings.hiddenGroupPaths = [];
+      if (!settings.levelFontSizes) settings.levelFontSizes = {};
+      if (!settings.levelIndents) settings.levelIndents = {};
       render();
     }
-    if (area === "local" && changes.discoveredViews) {
-      views = Array.isArray(changes.discoveredViews.newValue)
-        ? changes.discoveredViews.newValue
-        : [];
+    if (area === "local" && (changes.discoveredViews || changes.discoveredGroups)) {
+      if (changes.discoveredViews) {
+        views = Array.isArray(changes.discoveredViews.newValue)
+          ? changes.discoveredViews.newValue
+          : [];
+      }
+      if (changes.discoveredGroups) {
+        groups = Array.isArray(changes.discoveredGroups.newValue)
+          ? changes.discoveredGroups.newValue
+          : [];
+      }
       render();
     }
   });
