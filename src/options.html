@@ -7,156 +7,212 @@
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <main>
-      <header class="hdr">
-        <div>
-          <h1>Zendesk Views Tweaks</h1>
-          <p class="sub" id="header-sub">Customize your Zendesk views sidebar.</p>
-        </div>
-        <div class="header-status">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <h1>Zendesk Views Tweaks</h1>
+        <div class="topbar-tools">
+          <label class="profile-switcher">
+            <span>Profile:</span>
+            <select id="profile-select" aria-label="Editing profile"></select>
+            <button type="button" id="profile-new" title="Create profile from a Zendesk subdomain">＋</button>
+            <button type="button" id="profile-delete" title="Delete this profile" class="danger">×</button>
+          </label>
           <span id="status-pill" class="pill"></span>
-          <button type="button" id="open-zendesk" class="link-btn" title="Open github.zendesk.com">Open Zendesk ↗</button>
+          <button type="button" id="open-zendesk" class="link-btn" title="Open a Zendesk tab">Open Zendesk ↗</button>
         </div>
-      </header>
+      </div>
+    </header>
 
-      <!-- General -->
-      <section class="card" data-section="general">
-        <button type="button" class="card-toggle" aria-expanded="true">
-          <span class="caret">▼</span>
+    <div class="layout">
+      <nav class="sidenav" id="sidenav" aria-label="Section navigation">
+        <a href="#sec-general"   data-section="general">General</a>
+        <a href="#sec-density"   data-section="density">Density</a>
+        <a href="#sec-theme"     data-section="theme">Theme</a>
+        <a href="#sec-hide"      data-section="hide">Hide</a>
+        <a href="#sec-customize" data-section="customize">Customize views</a>
+        <a href="#sec-reorder"   data-section="reorder">Reorder</a>
+        <a href="#sec-templates" data-section="templates">Templates</a>
+        <a href="#sec-backup"    data-section="backup">Backup</a>
+      </nav>
+
+      <main class="content">
+        <!-- General -->
+        <section class="card" id="sec-general">
           <h2>General</h2>
-        </button>
-        <div class="card-body">
-          <label class="toggle"><input type="checkbox" id="enabled" /> <span>Extension enabled</span></label>
-          <label class="toggle"><input type="checkbox" id="compact" /> <span>Compact mode (apply density tokens)</span></label>
-          <label class="toggle"><input type="checkbox" id="reorderEnabled" /> <span>Reorder enabled (lets you rearrange views and groups)</span></label>
-          <p class="sub small">Schema version <span id="schema-version">2</span>. Settings sync across devices.</p>
-        </div>
-      </section>
+          <div class="card-body">
+            <label class="toggle"><input type="checkbox" id="enabled" /> <span>Extension enabled</span></label>
+            <label class="toggle"><input type="checkbox" id="compact" /> <span>Compact mode (apply density tokens)</span></label>
+            <label class="toggle"><input type="checkbox" id="themed" /> <span>Theme overrides (apply colors)</span></label>
+            <label class="toggle"><input type="checkbox" id="reorderEnabled" /> <span>Reorder enabled</span></label>
+            <fieldset class="reorder-mode" id="reorder-mode-set">
+              <legend>Reorder mode</legend>
+              <label><input type="radio" name="reorderMode" value="css" /> Visual (CSS) — default, robust</label>
+              <label><input type="radio" name="reorderMode" value="dom" /> Structural (DOM) — experimental, fixes keyboard order</label>
+            </fieldset>
+            <p class="sub small">
+              This profile: <strong id="general-profile-id">default</strong>.
+              <span id="general-fork-state"></span>
+            </p>
+          </div>
+        </section>
 
-      <!-- Density -->
-      <section class="card" data-section="density">
-        <button type="button" class="card-toggle" aria-expanded="true">
-          <span class="caret">▼</span>
+        <!-- Density -->
+        <section class="card" id="sec-density">
           <h2>Density</h2>
-        </button>
-        <div class="card-body">
-          <p class="sub">
-            Per-level spacing tokens. Drag a slider to preview live in any open Zendesk tab — values persist when you release.
-            Leave blank (clear with the <strong>×</strong>) to fall back to the global compact baseline.
-          </p>
-
-          <div class="presets">
-            <button type="button" data-preset="ultra-compact">Ultra compact</button>
-            <button type="button" data-preset="compact">Compact (default)</button>
-            <button type="button" data-preset="comfortable">Comfortable</button>
-            <button type="button" data-preset="zendesk">Zendesk default</button>
-            <button type="button" data-preset="clear" class="danger">Clear all</button>
+          <div class="card-body">
+            <p class="sub">
+              Per-level spacing. Drag a slider to preview live in any open Zendesk tab on this tenant — values persist when you release.
+              Click <strong>×</strong> to clear a value (falls back to global compact baseline).
+            </p>
+            <div class="presets">
+              <button type="button" data-preset="ultra-compact">Ultra compact</button>
+              <button type="button" data-preset="compact">Compact</button>
+              <button type="button" data-preset="comfortable">Comfortable</button>
+              <button type="button" data-preset="zendesk">Zendesk default</button>
+              <button type="button" data-preset="clear" class="danger">Clear all</button>
+            </div>
+            <h3 class="subhead">Per level</h3>
+            <p class="sub small">Level 1 = top-level groups. Higher numbers = more nested. Indent on level N controls left padding of children at that level.</p>
+            <div id="level-grid" class="level-grid"></div>
+            <h3 class="subhead">Global (compact mode)</h3>
+            <div id="global-grid" class="density-grid"></div>
+            <p class="sub small section-fork" id="density-fork"></p>
           </div>
+        </section>
 
-          <h3 class="subhead">Per level</h3>
-          <p class="sub small">
-            Level 1 = top-level groups (e.g. Shared, Personal). Higher numbers = more nested.
-            Indent on level N controls left padding of children at that level.
-          </p>
-          <div id="level-grid" class="level-grid"></div>
+        <!-- Theme -->
+        <section class="card" id="sec-theme">
+          <h2>Theme</h2>
+          <div class="card-body">
+            <p class="sub">Color overrides for the views sidebar. Active when <strong>Theme overrides</strong> is on in General.</p>
+            <h3 class="subhead">Palette</h3>
+            <div id="palette-grid" class="theme-grid"></div>
+            <h3 class="subhead">Per-level colors</h3>
+            <div id="theme-level-grid" class="theme-grid"></div>
+            <p class="sub small section-fork" id="theme-fork"></p>
+          </div>
+        </section>
 
-          <h3 class="subhead">Global (compact mode)</h3>
-          <div id="global-grid" class="density-grid"></div>
-        </div>
-      </section>
-
-      <!-- Hide -->
-      <section class="card" data-section="hide">
-        <button type="button" class="card-toggle" aria-expanded="true">
-          <span class="caret">▼</span>
+        <!-- Hide -->
+        <section class="card" id="sec-hide">
           <h2>Hide views &amp; groups</h2>
-        </button>
-        <div class="card-body">
-          <p class="sub">Uncheck a leaf to hide just that view. Uncheck a group to hide its entire subtree.</p>
-
-          <div class="toolbar">
-            <input type="search" id="search" placeholder="Search views or groups…" autocomplete="off" />
-            <button type="button" id="expand-all">Expand all</button>
-            <button type="button" id="collapse-all">Collapse all</button>
-            <button type="button" id="show-all">Show all</button>
-            <button type="button" id="hide-all">Hide all leaves</button>
-            <button type="button" id="rescan">Refresh from Zendesk</button>
+          <div class="card-body">
+            <p class="sub">Uncheck a leaf to hide just that view. Uncheck a group to hide its entire subtree.</p>
+            <div class="toolbar">
+              <input type="search" id="hide-search" placeholder="Search views or groups…" autocomplete="off" />
+              <button type="button" id="expand-all">Expand all</button>
+              <button type="button" id="collapse-all">Collapse all</button>
+              <button type="button" id="show-all">Show all</button>
+              <button type="button" id="hide-all">Hide all leaves</button>
+              <button type="button" id="rescan">Refresh from Zendesk</button>
+            </div>
+            <div id="hide-status" class="status" role="status" aria-live="polite"></div>
+            <div id="tree" class="tree" hidden></div>
+            <div id="empty" class="empty" hidden>
+              <p>No views discovered for this profile yet. Open your Zendesk Views page (<code>your-subdomain.zendesk.com/agent</code>) on this tenant.</p>
+            </div>
+            <details class="manual-add">
+              <summary>Add a view manually</summary>
+              <p class="sub">Paste a view URL or numeric ID. Useful for hiding a view you haven't loaded yet.</p>
+              <form id="manual-add-form">
+                <input type="text" id="manual-add-input" placeholder="View URL or numeric ID" autocomplete="off" />
+                <input type="text" id="manual-add-title" placeholder="Optional label" autocomplete="off" />
+                <button type="submit">Add</button>
+              </form>
+              <div id="manual-add-status" class="status"></div>
+            </details>
+            <p class="sub small section-fork" id="hide-fork"></p>
           </div>
+        </section>
 
-          <div id="hide-status" class="status" role="status" aria-live="polite"></div>
-          <div id="tree" class="tree" hidden></div>
-          <div id="empty" class="empty" hidden>
-            <p>No views discovered yet. Visit
-              <a href="https://github.zendesk.com/agent" target="_blank" rel="noopener">github.zendesk.com</a>
-              and let the views sidebar load.</p>
+        <!-- Customize -->
+        <section class="card" id="sec-customize">
+          <h2>Customize views</h2>
+          <div class="card-body">
+            <p class="sub">
+              Per-view styling: background color, text color, font weight, italic, padding, and an optional title prefix (emoji or short text).
+              Custom labels are coming in a future release.
+            </p>
+            <div class="toolbar">
+              <input type="search" id="customize-search" placeholder="Search views…" autocomplete="off" />
+              <button type="button" id="customize-clear-all" class="danger">Clear all customizations</button>
+            </div>
+            <div id="customize-status" class="status" role="status" aria-live="polite"></div>
+            <ul id="customize-list" class="customize-list"></ul>
+            <p class="sub small section-fork" id="customViews-fork"></p>
           </div>
+        </section>
 
-          <details class="manual-add">
-            <summary>Add a view manually</summary>
-            <p class="sub">Paste a view URL (e.g. <code>https://github.zendesk.com/agent/filters/360001234567</code>) or numeric ID.</p>
-            <form id="manual-add-form">
-              <input type="text" id="manual-add-input" placeholder="View URL or numeric ID" autocomplete="off" />
-              <input type="text" id="manual-add-title" placeholder="Optional label" autocomplete="off" />
-              <button type="submit">Add</button>
-            </form>
-            <div id="manual-add-status" class="status"></div>
-          </details>
-        </div>
-      </section>
-
-      <!-- Reorder -->
-      <section class="card" data-section="reorder">
-        <button type="button" class="card-toggle" aria-expanded="true">
-          <span class="caret">▼</span>
+        <!-- Reorder -->
+        <section class="card" id="sec-reorder">
           <h2>Reorder</h2>
-        </button>
-        <div class="card-body">
-          <p class="sub" id="reorder-intro">
-            Drag items to reorder them within their group. Use the up/down arrows for keyboard control.
-            Items stay in Zendesk's intrinsic order until you move them.
-            <br /><strong>Note:</strong> visual reorder only — keyboard tab order in Zendesk follows the underlying DOM.
-          </p>
-
-          <div id="reorder-disabled" class="empty" hidden>
-            <p>Reordering is currently disabled. Turn on <strong>Reorder enabled</strong> in the General section to use this feature.</p>
+          <div class="card-body">
+            <p class="sub">
+              Drag items to reorder them within their group, or use the up/down arrows.
+              Items keep Zendesk's intrinsic order until you move them.
+            </p>
+            <div id="reorder-disabled" class="empty" hidden>
+              <p>Reordering is currently disabled. Turn on <strong>Reorder enabled</strong> in General to use this feature.</p>
+            </div>
+            <div id="reorder-controls">
+              <label class="toolbar">
+                <span class="lbl">Container:</span>
+                <select id="reorder-container"></select>
+                <button type="button" id="reorder-reset">Reset this container</button>
+                <button type="button" id="reorder-reset-all" class="danger">Reset all order</button>
+              </label>
+              <ul id="reorder-list" class="reorder-list" aria-label="Reorder items"></ul>
+              <p class="sub small" id="reorder-hint"></p>
+            </div>
+            <p class="sub small section-fork" id="order-fork"></p>
           </div>
+        </section>
 
-          <div id="reorder-controls">
-            <label class="toolbar">
-              <span class="lbl">Container:</span>
-              <select id="reorder-container"></select>
-              <button type="button" id="reorder-reset">Reset this container</button>
-              <button type="button" id="reorder-reset-all" class="danger">Reset all order</button>
-            </label>
-            <ul id="reorder-list" class="reorder-list" aria-label="Reorder items"></ul>
-            <p class="sub small" id="reorder-hint"></p>
+        <!-- Templates -->
+        <section class="card" id="sec-templates">
+          <h2>Templates</h2>
+          <div class="card-body">
+            <p class="sub">
+              Save the current profile as a named template, or apply a template to overwrite the current profile.
+              Templates live on this device only.
+            </p>
+            <h3 class="subhead">Built-in</h3>
+            <ul id="builtin-templates" class="templates-list"></ul>
+            <h3 class="subhead">Saved</h3>
+            <div class="toolbar">
+              <button type="button" id="tpl-save">Save current profile as template…</button>
+              <button type="button" id="tpl-import">Import template…</button>
+              <input type="file" id="tpl-import-file" accept="application/json,.json" hidden />
+            </div>
+            <ul id="user-templates" class="templates-list"></ul>
+            <div id="tpl-status" class="status"></div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- Backup -->
-      <section class="card" data-section="backup">
-        <button type="button" class="card-toggle" aria-expanded="false">
-          <span class="caret">▶</span>
+        <!-- Backup -->
+        <section class="card" id="sec-backup">
           <h2>Backup &amp; diagnostics</h2>
-        </button>
-        <div class="card-body" hidden>
-          <p class="sub">Export your settings to a JSON file, import them back, or reset everything to defaults.</p>
-          <div class="toolbar">
-            <button type="button" id="export-btn">Export settings</button>
-            <button type="button" id="import-btn">Import settings…</button>
-            <input type="file" id="import-file" accept="application/json,.json" hidden />
-            <button type="button" id="reset-all" class="danger">Reset all to defaults</button>
+          <div class="card-body">
+            <p class="sub">Export this profile to JSON, import it back, or reset.</p>
+            <div class="toolbar">
+              <button type="button" id="export-btn">Export this profile</button>
+              <button type="button" id="import-btn">Import profile…</button>
+              <input type="file" id="import-file" accept="application/json,.json" hidden />
+              <button type="button" id="reset-profile" class="danger">Reset this profile</button>
+            </div>
+            <div id="backup-status" class="status"></div>
+            <h3 class="subhead">Diagnostics</h3>
+            <pre id="diag" class="diag"></pre>
+            <button type="button" id="copy-diag">Copy diagnostics</button>
           </div>
-          <div id="backup-status" class="status"></div>
+        </section>
+      </main>
+    </div>
 
-          <h3 class="subhead">Diagnostics</h3>
-          <pre id="diag" class="diag"></pre>
-          <button type="button" id="copy-diag">Copy diagnostics</button>
-        </div>
-      </section>
-    </main>
+    <!-- Modal mount -->
+    <div id="modal-root"></div>
 
+    <script src="lib.js"></script>
     <script src="options.js"></script>
   </body>
 </html>
