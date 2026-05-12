@@ -1,0 +1,61 @@
+/*
+ * Zendesk Views Tweaks — compact.css
+ *
+ * Density tweaks for the Zendesk Support views sidebar.
+ * Gated by `body.zvt-compact` so it can be toggled live from the popup.
+ * Scoped to the views nav container to avoid bleeding into ticket content.
+ *
+ * If Zendesk changes their DOM, the [data-test-id="views_pane"] selectors
+ * may need to be widened. The fallback `nav[aria-label*="iew" i]` covers
+ * "Views" / "View" labels case-insensitively.
+ */
+
+body.zvt-compact [data-test-id="views_pane"],
+body.zvt-compact nav[aria-label*="iew" i],
+body.zvt-compact .zvt-views-root {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+/* Tighten anchor/row padding for view items. */
+body.zvt-compact [data-test-id="views_pane"] a[href*="/agent/filters/"],
+body.zvt-compact nav[aria-label*="iew" i] a[href*="/agent/filters/"],
+body.zvt-compact .zvt-views-root a[href*="/agent/filters/"] {
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+  min-height: 0 !important;
+}
+
+/* Hide the wrapper row's intrinsic min-height if it has one. */
+body.zvt-compact [data-test-id="views_pane"] [role="listitem"],
+body.zvt-compact nav[aria-label*="iew" i] [role="listitem"],
+body.zvt-compact .zvt-views-root [role="listitem"] {
+  min-height: 0 !important;
+}
+
+/* Tighten section / category headers. */
+body.zvt-compact [data-test-id="views_pane"] h2,
+body.zvt-compact [data-test-id="views_pane"] h3,
+body.zvt-compact [data-test-id="views_pane"] [role="heading"],
+body.zvt-compact nav[aria-label*="iew" i] h2,
+body.zvt-compact nav[aria-label*="iew" i] h3,
+body.zvt-compact nav[aria-label*="iew" i] [role="heading"],
+body.zvt-compact .zvt-views-root h2,
+body.zvt-compact .zvt-views-root h3,
+body.zvt-compact .zvt-views-root [role="heading"] {
+  font-size: 11px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-top: 6px !important;
+  margin-bottom: 2px !important;
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+}
+
+/* Reduce icon sizes if any sit inline with view rows. */
+body.zvt-compact [data-test-id="views_pane"] svg,
+body.zvt-compact nav[aria-label*="iew" i] svg,
+body.zvt-compact .zvt-views-root svg {
+  width: 14px;
+  height: 14px;
+}
