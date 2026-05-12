@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Zendesk Views Tweaks",
+  "version": "0.1.0",
+  "description": "Compact the Zendesk views sidebar and hide views you don't care about.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Zendesk Views Tweaks",
+    "default_popup": "src/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "src/options.html",
+    "open_in_tab": true
+  },
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["https://github.zendesk.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://github.zendesk.com/*"],
+      "js": ["src/content.js"],
+      "css": ["src/compact.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Zendesk Views Tweaks</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --text: #1f2328;
+        --muted: #59636e;
+        --border: #d0d7de;
+        --accent: #2463eb;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #161b22;
+          --text: #e6edf3;
+          --muted: #9da7b3;
+          --border: #30363d;
+          --accent: #6ea8ff;
+        }
+      }
+      body {
+        margin: 0;
+        padding: 12px 14px;
+        width: 240px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+      }
+      label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 0;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--accent);
+      }
+      .actions {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid var(--border);
+      }
+      button {
+        width: 100%;
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--text);
+        border-radius: 6px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      .hint {
+        margin: 8px 0 0;
+        font-size: 11px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Views Tweaks</h1>
+    <label><input type="checkbox" id="enabled" /> Enabled</label>
+    <label><input type="checkbox" id="compact" /> Compact mode</label>
+    <div class="actions">
+      <button type="button" id="open-options">Open options…</button>
+    </div>
+    <p class="hint" id="hint">Settings sync across devices.</p>
+    <script src="popup.js"></script>
+  </body>
+</html>

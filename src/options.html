@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zendesk Views Tweaks — Options</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <header class="hdr">
+        <h1>Zendesk Views Tweaks</h1>
+        <p class="sub">Compact the views sidebar and hide views you don't care about.</p>
+      </header>
+
+      <section class="card">
+        <h2>Settings</h2>
+        <label class="toggle">
+          <input type="checkbox" id="enabled" />
+          <span>Enabled</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="compact" />
+          <span>Compact mode (denser sidebar)</span>
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>Views</h2>
+        <p class="sub">Uncheck a view to hide it from the Zendesk sidebar. Changes apply live.</p>
+
+        <div class="toolbar">
+          <input
+            type="search"
+            id="search"
+            placeholder="Search views…"
+            autocomplete="off"
+          />
+          <button type="button" id="show-all">Show all</button>
+          <button type="button" id="hide-all">Hide all</button>
+          <button type="button" id="rescan">Refresh from open Zendesk tab</button>
+        </div>
+
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+
+        <ul id="view-list" class="view-list" hidden></ul>
+
+        <div id="empty" class="empty" hidden>
+          <p>
+            No views discovered yet. Visit
+            <a href="https://github.zendesk.com/agent" target="_blank" rel="noopener">github.zendesk.com</a>
+            and let the views sidebar load — they'll appear here automatically.
+          </p>
+          <p>
+            Or use <strong>Refresh from open Zendesk tab</strong> above to scan a tab you already have open.
+          </p>
+        </div>
+
+        <details class="manual-add">
+          <summary>Add a view manually</summary>
+          <p class="sub">
+            Paste a view URL (e.g. <code>https://github.zendesk.com/agent/filters/360001234567</code>)
+            or just the numeric ID. Useful for hiding a view you haven't loaded yet.
+          </p>
+          <form id="manual-add-form">
+            <input
+              type="text"
+              id="manual-add-input"
+              placeholder="View URL or numeric ID"
+              autocomplete="off"
+            />
+            <input
+              type="text"
+              id="manual-add-title"
+              placeholder="Optional label"
+              autocomplete="off"
+            />
+            <button type="submit">Add</button>
+          </form>
+          <div id="manual-add-status" class="status"></div>
+        </details>
+      </section>
+    </main>
+
+    <script src="options.js"></script>
+  </body>
+</html>
