@@ -6,81 +6,46 @@
     <style>
       :root {
         color-scheme: light dark;
-        --bg: #ffffff;
-        --text: #1f2328;
-        --muted: #59636e;
-        --border: #d0d7de;
-        --accent: #2463eb;
+        --bg: #ffffff; --text: #1f2328; --muted: #59636e;
+        --border: #d0d7de; --accent: #2463eb; --warn: #d29922; --danger: #cf222e;
       }
       @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #161b22;
-          --text: #e6edf3;
-          --muted: #9da7b3;
-          --border: #30363d;
-          --accent: #6ea8ff;
-        }
+        :root { --bg: #161b22; --text: #e6edf3; --muted: #9da7b3;
+                --border: #30363d; --accent: #6ea8ff; --warn: #d29922; --danger: #ff7b72; }
       }
-      body {
-        margin: 0;
-        padding: 12px 14px;
-        width: 240px;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: var(--bg);
-        color: var(--text);
-      }
-      h1 {
-        margin: 0 0 8px;
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--muted);
-      }
-      label {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 0;
-        font-size: 13px;
-        cursor: pointer;
-      }
-      input[type="checkbox"] {
-        width: 16px;
-        height: 16px;
-        accent-color: var(--accent);
-      }
-      .actions {
-        margin-top: 8px;
-        padding-top: 8px;
-        border-top: 1px solid var(--border);
-      }
-      button {
-        width: 100%;
-        padding: 6px 10px;
-        border: 1px solid var(--border);
-        background: transparent;
-        color: var(--text);
-        border-radius: 6px;
-        font-size: 13px;
-        cursor: pointer;
-      }
-      button:hover {
-        border-color: var(--accent);
-      }
-      .hint {
-        margin: 8px 0 0;
-        font-size: 11px;
-        color: var(--muted);
-      }
+      body { margin: 0; padding: 12px 14px; width: 260px;
+             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+             background: var(--bg); color: var(--text); }
+      h1 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase;
+           letter-spacing: 0.05em; color: var(--muted); }
+      label { display: flex; align-items: center; gap: 8px; padding: 6px 0;
+              font-size: 13px; cursor: pointer; }
+      input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+      .actions { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+      button { width: 100%; padding: 6px 10px; border: 1px solid var(--border);
+               background: transparent; color: var(--text); border-radius: 6px;
+               font-size: 13px; cursor: pointer; }
+      button:hover { border-color: var(--accent); }
+      .hint { margin: 8px 0 0; font-size: 11px; color: var(--muted); }
+      .health { margin-top: 8px; padding: 6px 8px; border-radius: 4px;
+                font-size: 11px; display: none; align-items: center; gap: 6px; }
+      .health.warn { display: flex; background: color-mix(in srgb, var(--warn) 15%, transparent);
+                     color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+      .health.ok { display: flex; background: transparent; color: var(--muted); }
+      .health-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+      .health.warn .health-dot { background: var(--warn); }
+      .health.ok .health-dot { background: #2da44e; }
     </style>
   </head>
   <body>
     <h1>Views Tweaks</h1>
     <label><input type="checkbox" id="enabled" /> Enabled</label>
     <label><input type="checkbox" id="compact" /> Compact mode</label>
+    <label><input type="checkbox" id="reorder" /> Reorder enabled</label>
     <div class="actions">
       <button type="button" id="open-options">Open options…</button>
     </div>
+    <div id="health" class="health"><span class="health-dot"></span><span id="health-text"></span></div>
     <p class="hint" id="hint">Settings sync across devices.</p>
     <script src="popup.js"></script>
   </body>

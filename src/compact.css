@@ -1,65 +1,27 @@
 /*
- * Zendesk Views Tweaks — compact.css  (v0.3.0)
+ * Zendesk Views Tweaks — compact.css  (v0.4.0)
  *
- * Static density baseline; per-level overrides are injected by content.js
- * into <style id="zvt-density-rules"> and win by specificity.
+ * Minimal baseline for compact mode. Most styling is dynamic now —
+ * see content.js (#zvt-density-rules, #zvt-hide-rules, #zvt-order-rules).
  *
- * Calibrated DOM:
- *   ul[data-test-id="views_views-tree_container"]                   — outer pane root
- *     li
- *       div                                                          — header wrapper
- *         a[data-test-id^="views_views-list_item-folder-"]   role=button
- *           div   <- this div carries Zendesk's 0/20/0/12 padding
- *       div                                                          — children wrapper
- *         div
- *           ul[data-test-id^="views_views-tree_container-children_"] — nested
- *             li
- *               div
- *                 a[data-test-id^="views_views-list_item-view-"]    — leaf
- *                   div   <- same 0/20/0/12 padded inner div
+ * This file only handles the most jarring out-of-the-box defaults that
+ * the user will almost always want when "compact" is on, so there's no
+ * unstyled flash before settings load. Per-level overrides win by
+ * specificity (they include the [data-zvt-d="N"] attribute).
  */
 
-/* Both folder (group header) and view (leaf) anchors get the same
- * row-tightening treatment — they have the same internal structure. */
+/* Tighten anchor row vertical spacing baseline. */
 body.zvt-compact a[data-test-id^="views_views-list_item-view-"],
 body.zvt-compact a[data-test-id^="views_views-list_item-folder-"] {
   padding-top: 0 !important;
   padding-bottom: 0 !important;
   min-height: 0 !important;
-  font-size: 12px !important;
-  line-height: 16px !important;
 }
 
-/* The padded inner div is the main horizontal-padding source. */
-body.zvt-compact a[data-test-id^="views_views-list_item-view-"] > div,
-body.zvt-compact a[data-test-id^="views_views-list_item-folder-"] > div {
-  padding-left: 4px !important;
-  padding-right: 6px !important;
-}
-
-/* Count badge: smaller and tighter. */
-body.zvt-compact [data-test-id="views_views-list_item_count"] {
-  font-size: 11px !important;
-  line-height: 14px !important;
-  margin-left: 4px !important;
-}
-
-/* Tighten any inline svg icons. */
-body.zvt-compact a[data-test-id^="views_views-list_item-view-"] svg,
-body.zvt-compact a[data-test-id^="views_views-list_item-folder-"] svg {
-  width: 12px !important;
-  height: 12px !important;
-}
-
-/* Leaf row LIs: drop intrinsic spacing. */
+/* Drop intrinsic LI margin/min-height on tree rows. */
+body.zvt-compact ul[data-test-id="views_views-tree_container"] > li,
 body.zvt-compact ul[data-test-id^="views_views-tree_container-children_"] > li {
   margin-top: 0 !important;
   margin-bottom: 0 !important;
   min-height: 0 !important;
-}
-
-/* Default nested-container indent. Per-level overrides in #zvt-density-rules
- * win by specificity (they include the [data-zvt-d="N"] attribute). */
-body.zvt-compact ul[data-test-id^="views_views-tree_container-children_"] {
-  padding-left: 4px !important;
 }
