@@ -10,7 +10,7 @@
     <main>
       <header class="hdr">
         <h1>Zendesk Views Tweaks</h1>
-        <p class="sub">Compact the views sidebar and hide views you don't care about.</p>
+        <p class="sub">Compact the views sidebar and hide views or groups you don't care about.</p>
       </header>
 
       <section class="card">
@@ -26,8 +26,24 @@
       </section>
 
       <section class="card">
-        <h2>Views</h2>
-        <p class="sub">Uncheck a view to hide it from the Zendesk sidebar. Changes apply live.</p>
+        <h2>Density (Compact mode)</h2>
+        <p class="sub">
+          Per-level font size and indent. Applies only when Compact mode is on.
+          Indent controls the left padding added to nested children at that level.
+        </p>
+        <div id="density-grid" class="density-grid"></div>
+        <div class="density-actions">
+          <button type="button" id="density-defaults">Apply suggested defaults</button>
+          <button type="button" id="density-reset">Clear all</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Views &amp; groups</h2>
+        <p class="sub">
+          Uncheck a leaf view to hide just that view. Uncheck a group to hide the
+          entire group (header and all children). Changes apply live.
+        </p>
 
         <div class="toolbar">
           <input
@@ -39,7 +55,7 @@
           <button type="button" id="expand-all" title="Expand all groups">Expand all</button>
           <button type="button" id="collapse-all" title="Collapse all groups">Collapse all</button>
           <button type="button" id="show-all">Show all</button>
-          <button type="button" id="hide-all">Hide all</button>
+          <button type="button" id="hide-all">Hide all leaves</button>
           <button type="button" id="rescan">Refresh from open Zendesk tab</button>
         </div>
 

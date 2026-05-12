@@ -1,29 +1,28 @@
 /*
- * Zendesk Views Tweaks — compact.css
+ * Zendesk Views Tweaks — compact.css  (v0.3.0)
  *
- * Density tweaks for the Zendesk Support views sidebar.
- * Gated by `body.zvt-compact` so it can be toggled live from the popup.
+ * Static density baseline; per-level overrides are injected by content.js
+ * into <style id="zvt-density-rules"> and win by specificity.
  *
- * Real Zendesk DOM (calibrated 2026-05):
- *   ul[data-test-id^="views_views-tree_container-children_<path>"]
- *     li (single view item)
- *       div
- *         a[data-test-id="views_views-list_item-view-<id>"]
- *           div  <- has padding: 0 20px 0 12px (the main horizontal padding)
- *             div ... <text> ... [data-test-id="views_views-list_item_count"]
- *
- * Path is encoded in the parent ul's test-id, joined with `::`,
- * e.g. "Shared::🙋‍♀️ My tickets". Each level of nesting also adds
- * padding-left: 4px on the ul, which we tighten too.
+ * Calibrated DOM:
+ *   ul[data-test-id="views_views-tree_container"]                   — outer pane root
+ *     li
+ *       div                                                          — header wrapper
+ *         a[data-test-id^="views_views-list_item-folder-"]   role=button
+ *           div   <- this div carries Zendesk's 0/20/0/12 padding
+ *       div                                                          — children wrapper
+ *         div
+ *           ul[data-test-id^="views_views-tree_container-children_"] — nested
+ *             li
+ *               div
+ *                 a[data-test-id^="views_views-list_item-view-"]    — leaf
+ *                   div   <- same 0/20/0/12 padded inner div
  */
 
-/* Tighten nested tree containers (cumulative left padding per nesting level). */
-body.zvt-compact ul[data-test-id^="views_views-tree_container-children_"] {
-  padding-left: 2px !important;
-}
-
-/* The view row itself: kill vertical padding/min-height, snug font metrics. */
-body.zvt-compact a[data-test-id^="views_views-list_item-view-"] {
+/* Both folder (group header) and view (leaf) anchors get the same
+ * row-tightening treatment — they have the same internal structure. */
+body.zvt-compact a[data-test-id^="views_views-list_item-view-"],
+body.zvt-compact a[data-test-id^="views_views-list_item-folder-"] {
   padding-top: 0 !important;
   padding-bottom: 0 !important;
   min-height: 0 !important;
@@ -31,31 +30,36 @@ body.zvt-compact a[data-test-id^="views_views-list_item-view-"] {
   line-height: 16px !important;
 }
 
-/* The inner padded div (12px left / 20px right by default) is the main culprit
- * for "huge padding". Tighten both sides so labels sit closer to the edge. */
-body.zvt-compact a[data-test-id^="views_views-list_item-view-"] > div {
+/* The padded inner div is the main horizontal-padding source. */
+body.zvt-compact a[data-test-id^="views_views-list_item-view-"] > div,
+body.zvt-compact a[data-test-id^="views_views-list_item-folder-"] > div {
   padding-left: 4px !important;
   padding-right: 6px !important;
 }
 
-/* Count badge: smaller and closer to the title. */
+/* Count badge: smaller and tighter. */
 body.zvt-compact [data-test-id="views_views-list_item_count"] {
   font-size: 11px !important;
   line-height: 14px !important;
   margin-left: 4px !important;
 }
 
-/* Inline icons inside view rows. */
-body.zvt-compact a[data-test-id^="views_views-list_item-view-"] svg {
+/* Tighten any inline svg icons. */
+body.zvt-compact a[data-test-id^="views_views-list_item-view-"] svg,
+body.zvt-compact a[data-test-id^="views_views-list_item-folder-"] svg {
   width: 12px !important;
   height: 12px !important;
 }
 
-/* The leaf `<li>` rows have no intrinsic min-height, but force it just in case
- * Zendesk adds margins later. */
+/* Leaf row LIs: drop intrinsic spacing. */
 body.zvt-compact ul[data-test-id^="views_views-tree_container-children_"] > li {
   margin-top: 0 !important;
   margin-bottom: 0 !important;
   min-height: 0 !important;
 }
 
+/* Default nested-container indent. Per-level overrides in #zvt-density-rules
+ * win by specificity (they include the [data-zvt-d="N"] attribute). */
+body.zvt-compact ul[data-test-id^="views_views-tree_container-children_"] {
+  padding-left: 4px !important;
+}
