@@ -776,10 +776,25 @@
           containerCount: discoveredContainers.size,
         });
         return false;
-      case "zvt:preview":
-        applyPreviewPatch(msg.patch);
+      case "zvt:preview": {
+        // When the options page is editing the default profile, it broadcasts
+        // with profileId: "*". A tab should only apply patches for sections
+        // it inherits (i.e. has NOT forked) — forked sections would override
+        // the default change anyway, so previewing them is misleading.
+        let patch = msg.patch;
+        if (msg.profileId === "*" && patch && typeof patch === "object") {
+          const filtered = {};
+          for (const [section, sectionPatch] of Object.entries(patch)) {
+            if (!profile.isForked(section)) {
+              filtered[section] = sectionPatch;
+            }
+          }
+          patch = filtered;
+        }
+        applyPreviewPatch(patch);
         sendResponse({ ok: true, profileId: PROFILE_ID });
         return false;
+      }
       case "zvt:clearPreview":
         clearAllPreviews();
         sendResponse({ ok: true, profileId: PROFILE_ID });
