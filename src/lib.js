@@ -201,27 +201,29 @@
     countBadgePadding:    { min: 0, max: 12 },
   });
 
-  // Zendesk's intrinsic computed values for the views sidebar, observed
-  // from the user's DOM probe (see plan.md). Used as:
-  //   - slider thumb resting position when an override is unset (so the
-  //     user can see "this is where Zendesk has it" and drag down/up)
-  //   - reference text shown in each row's label
-  // These are approximations — Zendesk may tweak them between releases.
-  // Update by re-running the probe in the README's "Calibration" section.
+  // Zendesk's intrinsic computed values for the views sidebar, measured
+  // from a live tenant via the Calibration probe in README.md (run it on
+  // your own tenant if upstream Zendesk changes these).
+  //
+  // Key insight: most of Zendesk's vertical spacing comes from
+  // `min-height: 40px` on each anchor, NOT from padding (which is 0/0).
+  // Our static compact.css sets min-height: 0 to shrink rows; the
+  // rowMinHeight token overrides that per-level if you want fixed-height
+  // rows back.
   const INTRINSIC_LEVEL = Object.freeze({
-    fontSize: 12,
+    fontSize: 14,
     lineHeight: 18,
-    rowPaddingTop: 2,
-    rowPaddingBottom: 2,
+    rowPaddingTop: 0,
+    rowPaddingBottom: 0,
     rowPaddingLeft: 12,
     rowPaddingRight: 20,
-    rowMinHeight: 0,
+    rowMinHeight: 40,
     indent: 4,
   });
   const INTRINSIC_GLOBAL = Object.freeze({
     rowGap: 0,
-    iconSize: 14,
-    countBadgeFontSize: 12,
+    iconSize: 12,
+    countBadgeFontSize: 14,
     countBadgeLineHeight: 18,
     countBadgeMargin: 0,
     countBadgePadding: 0,
