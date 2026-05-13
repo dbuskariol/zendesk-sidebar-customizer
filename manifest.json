@@ -1,15 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Zendesk Views Tweaks",
+  "name": "Zendesk Sidebar Customizer",
   "version": "0.6.4",
-  "description": "Customize the Zendesk Support views sidebar — per-tenant profiles, theming, per-view styling, reorder, live preview.",
+  "description": "Customize the Zendesk Support views sidebar \u2014 per-tenant profiles, theming, per-view styling, reorder, live preview.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
   "action": {
-    "default_title": "Zendesk Views Tweaks",
+    "default_title": "Zendesk Sidebar Customizer",
     "default_popup": "src/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
@@ -21,13 +21,25 @@
     "page": "src/options.html",
     "open_in_tab": true
   },
-  "permissions": ["storage", "tabs"],
-  "host_permissions": ["https://*.zendesk.com/*"],
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*.zendesk.com/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["https://*.zendesk.com/*"],
-      "js": ["src/lib.js", "src/content.js"],
-      "css": ["src/compact.css"],
+      "matches": [
+        "https://*.zendesk.com/*"
+      ],
+      "js": [
+        "src/lib.js",
+        "src/content.js"
+      ],
+      "css": [
+        "src/compact.css"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }

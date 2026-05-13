@@ -1,5 +1,5 @@
 /*
- * Zendesk Views Tweaks — content.js  (v0.6.0)
+ * Zendesk Sidebar Customizer — content.js  (v0.6.4)
  *
  * Per-tab profile = window.location.host. Owns 5 dynamic stylesheets plus
  * sidebar discovery, live preview, and (optional) DOM reorder mode.

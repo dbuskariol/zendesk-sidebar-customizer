@@ -1,5 +1,5 @@
 /*
- * Zendesk Views Tweaks — options.js  (v0.6.0)
+ * Zendesk Sidebar Customizer — options.js  (v0.6.4)
  *
  * Multi-section options page driven by ZVT.ProfileStore.
  *
