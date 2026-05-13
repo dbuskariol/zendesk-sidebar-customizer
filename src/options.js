@@ -157,53 +157,42 @@ let expandedCustomViewId = null;
 let previewTimer = 0;
 let pendingPreviewPatch = null;
 
-// Local-write suppression: when the options page commits a section, the
-// resulting storage.onChanged event echoes back to us. Re-rendering the
-// section the user JUST touched would destroy any active control (most
-// visibly: the native color picker popup closes mid-selection).
+// Local-write "color-commit" suppression. The ONLY case we need to suppress
+// the storage-echo re-render is right after a color-picker commit: the
+// native <input type="color"> dropdown (on macOS especially) can stay open
+// across `change` events, and rebuilding the input destroys the dropdown.
 //
-// We mark each section with a "recently written locally" timestamp; if a
-// storage echo arrives within LOCAL_WRITE_SUPPRESS_MS, we skip re-rendering
-// THAT section. Other sections still re-render normally.
-const LOCAL_WRITE_SUPPRESS_MS = 800;
-const localWriteAt = new Map(); // section -> timestamp ms
+// Pure timestamp-based suppression (v0.6.1) was too broad — it swallowed
+// echoes from cross-section writes (toggling reorderEnabled), drag-drops on
+// the reorder list, manual hide checkboxes, etc.
+//
+// New design: one-shot **pending echo counter** per section. A color-picker
+// commit increments the counter for its section before writing. The next
+// matching storage echo decrements and skips re-render exactly once. A
+// short TTL clears stale tokens if no echo arrives. No section-wide blanket;
+// only the specific commit that needs protection consumes a token.
+const PENDING_ECHO_TTL_MS = 1500;
+const pendingColorEchoes = new Map(); // section -> { count, expiresAt }
 
-function markLocalWrite(section) {
-  localWriteAt.set(section, Date.now());
+function pushPendingColorEcho(section) {
+  const now = Date.now();
+  const cur = pendingColorEchoes.get(section) || { count: 0, expiresAt: 0 };
+  pendingColorEchoes.set(section, {
+    count: cur.count + 1,
+    expiresAt: now + PENDING_ECHO_TTL_MS,
+  });
 }
 
-function recentlyWroteLocally(section) {
-  const t = localWriteAt.get(section);
-  return t != null && (Date.now() - t) < LOCAL_WRITE_SUPPRESS_MS;
-}
-
-/**
- * Wrap a fresh ProfileStore so every write marks the affected section as
- * "recently written locally", suppressing the storage-echo re-render.
- * Single chokepoint for all writes; keeps the suppression logic DRY.
- */
-function attachLocalWriteTracking(s) {
-  const origUpdate = s.update.bind(s);
-  const origReplace = s.replace.bind(s);
-  const origFork = s.fork.bind(s);
-  const origUnfork = s.unfork.bind(s);
-  s.update = (section, value) => {
-    markLocalWrite(section);
-    return origUpdate(section, value);
-  };
-  s.replace = (section, value) => {
-    markLocalWrite(section);
-    return origReplace(section, value);
-  };
-  s.fork = (section) => {
-    markLocalWrite(section);
-    return origFork(section);
-  };
-  s.unfork = (section) => {
-    markLocalWrite(section);
-    return origUnfork(section);
-  };
-  return s;
+function consumePendingColorEcho(section) {
+  const cur = pendingColorEchoes.get(section);
+  if (!cur || !cur.count) return false;
+  if (Date.now() > cur.expiresAt) {
+    pendingColorEchoes.delete(section);
+    return false;
+  }
+  cur.count -= 1;
+  if (cur.count <= 0) pendingColorEchoes.delete(section);
+  return true;
 }
 
 
@@ -302,22 +291,20 @@ function queuePreview(patch) {
 async function sendPreview(patch) {
   try {
     const tabs = await chrome.tabs.query({ url: ZENDESK_URL_MATCH });
+    if (editingProfileId === RESERVED_PROFILE_ID) {
+      // Editing default = broadcast to every Zendesk tab. The receiver will
+      // filter out sections it has its own value for. This matches user
+      // intent: "default" means anything inheriting from default.
+      for (const t of tabs) {
+        await safeSend(t.id, { type: "zvt:preview", patch, profileId: "*" });
+      }
+      return;
+    }
+    // Editing a tenant profile: only preview to tabs on that exact host.
     const matching = tabs.filter((t) => {
       try { return new URL(t.url).host === editingProfileId; }
       catch { return false; }
     });
-    if (!matching.length && editingProfileId === RESERVED_PROFILE_ID) {
-      // Default profile: preview into any Zendesk tab whose host has no profile.
-      for (const t of tabs) {
-        try {
-          const host = new URL(t.url).host;
-          if (!allProfiles.includes(host)) {
-            await safeSend(t.id, { type: "zvt:preview", patch, profileId: RESERVED_PROFILE_ID });
-          }
-        } catch {}
-      }
-      return;
-    }
     for (const t of matching) {
       await safeSend(t.id, { type: "zvt:preview", patch, profileId: editingProfileId });
     }
@@ -394,13 +381,20 @@ function buildRow(cfg) {
   const markUnset = () => { row.classList.remove("set"); clearBtn.disabled = true; };
 
   if (cfg.kind === "color") {
+    // Wrap commits so a one-shot pending-echo token is pushed BEFORE the
+    // underlying store write — protects the (possibly still-open) native
+    // color picker from being torn down by the storage echo's re-render.
+    const colorCommit = (v) => {
+      if (cfg.section) pushPendingColorEcho(cfg.section);
+      return cfg.onCommit && cfg.onCommit(v);
+    };
     primary.addEventListener("input", () => {
       const v = primary.value;
       secondary.value = v;
       markSet();
       cfg.onPreview && cfg.onPreview(v);
     });
-    primary.addEventListener("change", () => cfg.onCommit && cfg.onCommit(primary.value));
+    primary.addEventListener("change", () => colorCommit(primary.value));
     secondary.addEventListener("input", () => {
       const raw = secondary.value.trim();
       if (!raw) return;
@@ -415,7 +409,7 @@ function buildRow(cfg) {
       const raw = secondary.value.trim();
       if (!raw) { cfg.onClear && cfg.onClear(); markUnset(); return; }
       const v = normHex(raw);
-      if (v) { primary.value = v; secondary.value = v; cfg.onCommit && cfg.onCommit(v); }
+      if (v) { primary.value = v; secondary.value = v; colorCommit(v); }
       else { secondary.value = primary.value; }
     });
   } else {
@@ -589,7 +583,7 @@ function renderTheme() {
 
   for (const tk of PALETTE_TOKENS) {
     els.paletteGrid.appendChild(buildRow({
-      kind: "color", label: tk.label, value: palette[tk.key],
+      kind: "color", section: "theme", label: tk.label, value: palette[tk.key],
       onPreview: (v) => queuePreview({ theme: { palette: { [tk.key]: v } } }),
       onCommit: (v) => store.update("theme", { palette: { [tk.key]: v } }),
       onClear: async () => {
@@ -612,7 +606,7 @@ function renderTheme() {
     const tokens = (theme.level && theme.level[String(depth)]) || {};
     for (const tk of THEME_LEVEL_TOKENS) {
       block.appendChild(buildRow({
-        kind: "color", label: tk.label, value: tokens[tk.key],
+        kind: "color", section: "theme", label: tk.label, value: tokens[tk.key],
         onPreview: (v) => queuePreview({ theme: { level: { [String(depth)]: { [tk.key]: v } } } }),
         onCommit: (v) => store.update("theme", { level: { [String(depth)]: { [tk.key]: v } } }),
         onClear: async () => {
@@ -1044,7 +1038,7 @@ function renderCustomizeEditor(viewId, c) {
   // bgColor, fgColor (color rows)
   for (const [key, label] of [["bgColor", "Background"], ["fgColor", "Text color"]]) {
     grid.appendChild(buildRow({
-      kind: "color", label, value: c[key],
+      kind: "color", section: "customViews", label, value: c[key],
       onPreview: (v) => previewField(key, v),
       onCommit: (v) => updateField(key, v),
       onClear: () => updateField(key, null),
@@ -1754,7 +1748,7 @@ function bindProfileSwitcher() {
 
 async function switchEditingProfile(id) {
   await setEditingProfileId(id);
-  store = attachLocalWriteTracking(new ProfileStore(id));
+  store = new ProfileStore(id);
   await store.load();
   await loadDiscoveryForProfile(id);
   renderAll();
@@ -1915,12 +1909,12 @@ function bindAll() {
     // Restart with the fresh default profile.
     allProfiles = [RESERVED_PROFILE_ID];
     editingProfileId = RESERVED_PROFILE_ID;
-    store = attachLocalWriteTracking(new ProfileStore(RESERVED_PROFILE_ID));
+    store = new ProfileStore(RESERVED_PROFILE_ID);
     await store.load();
     views = []; groups = []; containers = [];
     healthByProfile = {}; userTemplates = [];
     expandedHidePaths.clear(); expandedCustomViewId = null;
-    localWriteAt.clear();
+    pendingColorEchoes.clear();
     renderAll();
   });
 
@@ -1940,19 +1934,17 @@ function bindAll() {
   chrome.storage.onChanged.addListener(async (changes, area) => {
     const sections = await store.handleStorageChange(changes, area);
 
-    // Sync: section changes are routed to per-section renderers. profileIndex
-    // changes affect the switcher only.
+    // Sync: section changes are routed to per-section renderers.
     for (const section of sections) {
-      // Skip re-rendering a section the user JUST wrote locally — the active
-      // input/control already has the correct value, and a rebuild would
-      // destroy any open native UI (color picker, native dropdowns, etc.).
-      if (recentlyWroteLocally(section)) continue;
+      // Skip re-render exactly once if this echo is the result of a
+      // color-picker commit we just made — the native picker may still be
+      // open and tearing down its <input> would close it.
+      if (consumePendingColorEcho(section)) continue;
       const renderer = SECTION_RENDERERS[section];
       if (renderer) renderer();
     }
-    // Density and prefs both feed the diag dump and reorder UI's enabled
-    // state — refresh the small dependent bits without rebuilding controls.
-    if (sections.includes("prefs") && !recentlyWroteLocally("prefs")) renderReorder();
+    // Cross-section dependents.
+    if (sections.includes("prefs")) renderReorder();
     if (sections.length) renderDiag();
 
     if (area === "sync" && changes.profileIndex) {
@@ -2006,7 +1998,7 @@ function bindAll() {
   bindEls();
   allProfiles = (await loadProfileIndex()).profiles;
   editingProfileId = await loadEditingProfileId();
-  store = attachLocalWriteTracking(new ProfileStore(editingProfileId));
+  store = new ProfileStore(editingProfileId);
   await store.load();
   await Promise.all([
     loadDiscoveryForProfile(editingProfileId),
