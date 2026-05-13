@@ -1,0 +1,20 @@
+# Files web-ext (Mozilla's CLI tool) should ignore when packaging or signing.
+# Mirrors the exclusions in scripts/pack.sh so `npx web-ext build` and
+# `npx web-ext sign` produce the same artifact as our own packing.
+
+.git/
+.github/
+.gitignore
+.web-ext-ignore
+LICENSE
+README.md
+STORE.md
+PRIVACY.md
+plan.md
+scripts/
+dist/
+web-ext-artifacts/
+**/.DS_Store
+**/Thumbs.db
+*.zip
+*.xpi

@@ -16,9 +16,20 @@ Works on any Zendesk Support tenant (`*.zendesk.com`). Settings sync across devi
 
 ## Install
 
-This extension isn't on the Chrome Web Store or Mozilla AMO yet — install it from the source.
+### From a store (recommended — permanent install)
 
-### Step 1 — Get the code
+The extension is being prepared for both Chrome Web Store and Mozilla AMO. Once published, install with one click and updates arrive automatically:
+
+- **Chrome / Edge / Brave / Arc / Vivaldi**: install from the [Chrome Web Store](https://chrome.google.com/webstore/) — link added once published.
+- **Firefox** (version 128 or newer): install from [Mozilla AMO](https://addons.mozilla.org/) — link added once published.
+
+Until the listings go live, use the developer install below. See [STORE.md](./STORE.md) for the publication workflow.
+
+### Developer install (from source)
+
+Useful if you want the latest unreleased version, you're contributing, or the store listing isn't live yet.
+
+#### Step 1 — Get the code
 
 Pick whichever you prefer:
 
@@ -31,27 +42,27 @@ Pick whichever you prefer:
 git clone https://github.com/dbuskariol/zendesk-sidebar-customizer.git ~/extensions/zendesk-sidebar-customizer
 ```
 
-### Step 2 — Load it into your browser
+#### Step 2 — Load it into your browser
 
-#### Chrome / Edge / Brave / Arc / Vivaldi (Chromium)
+##### Chrome / Edge / Brave / Arc / Vivaldi (Chromium)
 1. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`, etc.).
 2. Toggle **Developer mode** on (top-right corner).
 3. Click **Load unpacked**.
 4. Select the **folder you unzipped or cloned** (it should contain `manifest.json` at the top level).
 5. Click the puzzle-piece icon in the toolbar and pin **Zendesk Sidebar Customizer**.
 
-The extension persists across browser restarts.
+The extension persists across browser restarts. Chromium will nag about developer-mode extensions on every startup; that nag goes away once you install from the Chrome Web Store.
 
-#### Firefox (≥128)
+##### Firefox (≥128)
 1. Open `about:debugging`.
 2. Click **This Firefox** in the left sidebar.
 3. Click **Load Temporary Add-on…**.
 4. Pick the `manifest.json` inside the folder you unzipped or cloned.
 5. Pin the extension via the toolbar overflow menu if you want quick access.
 
-> **Note:** Firefox unloads temporary add-ons on browser restart. To keep the extension across restarts, you need a signed `.xpi` from Mozilla AMO. That's not yet published — for now, re-load via `about:debugging` after each restart, or [submit your own signing request](https://extensionworkshop.com/documentation/publish/) if you want a permanent install.
+> **Firefox temporary add-ons unload on browser restart.** This is a Mozilla policy for unsigned extensions, not something the extension can override. For a permanent install on Firefox, use the Mozilla AMO listing once published, or follow the self-distribution path in [STORE.md](./STORE.md) to sign your own `.xpi`.
 
-### Step 3 — Use it
+#### Step 3 — Use it
 
 1. Visit your Zendesk Support views page: `https://your-subdomain.zendesk.com/agent`.
 2. Click the extension icon in the toolbar to open the popup. You'll see your tenant's profile, master toggles, and a health indicator.
@@ -61,9 +72,11 @@ By default the extension does **nothing** to your sidebar until you opt in (Comp
 
 ### Updating
 
-**Chromium**: Pull or re-download, then click the **reload** icon next to the extension in `chrome://extensions`. Your settings persist across updates.
+**Store install**: updates arrive automatically.
 
-**Firefox** (temporary add-on): re-load via `about:debugging` after replacing the files. Settings stored in `storage.sync` persist across reloads as long as the extension `id` doesn't change (it's pinned in the manifest).
+**Developer install (Chromium)**: pull or re-download, then click the **reload** icon next to the extension in `chrome://extensions`. Your settings persist across updates.
+
+**Developer install (Firefox temporary add-on)**: re-load via `about:debugging` after replacing the files. Settings stored in `storage.sync` persist across reloads as long as the extension `id` doesn't change (it's pinned in the manifest).
 
 ### Uninstalling
 
@@ -254,10 +267,12 @@ If Zendesk changes their DOM:
 
 ## Privacy
 
-- This extension makes **no network requests** of its own.
-- Per-profile settings stay in your browser. Sync sections (`prefs`, `theme`, `density`) sync via the browser's built-in extension storage sync (Chrome Sync on Chromium, Firefox Sync on Firefox). Per-device sections (`hide`, `order`, `customViews`) never leave the local machine.
-- View IDs and titles in the discovered catalog stay local.
-- Templates you export contain whatever sections you include. If you include `customViews` and use the (future) custom-label feature, that text would be in the export — be aware before sharing.
+Full statement in [PRIVACY.md](./PRIVACY.md). Summary:
+
+- **No network requests.** No analytics, no telemetry, no remote configuration, no third-party SDKs.
+- **No data collection.** The author receives nothing; everything stays in your browser.
+- Per-profile settings stay local or sync between your own devices via the browser's built-in extension storage sync (Chrome Sync on Chromium, Firefox Sync on Firefox).
+- See [PRIVACY.md](./PRIVACY.md) for the full permissions table and the data-deletion path.
 
 ## Development
 
@@ -276,6 +291,7 @@ src/
   popup.js            Popup logic + tenant detection + health pill
 manifest.json         MV3 manifest (lib.js loaded BEFORE content.js)
 icons/                16/48/128 PNG icons
+scripts/pack.sh       Build the store-submission zip (no build step for the extension)
 ```
 
 To iterate locally:
@@ -290,6 +306,14 @@ node --check src/content.js
 node --check src/options.js
 node --check src/popup.js
 python3 -c "import json; json.load(open('manifest.json'))"
+```
+
+### Releasing
+
+See [STORE.md](./STORE.md) for the Chrome Web Store and Mozilla AMO submission workflow. Quick recipe:
+```sh
+bash scripts/pack.sh
+# Upload dist/zendesk-sidebar-customizer-<version>.zip to both stores.
 ```
 
 ## Smoke test
