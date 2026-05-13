@@ -530,6 +530,31 @@
     return { profiles: [RESERVED_PROFILE_ID] };
   }
 
+  // Known Zendesk hosts the user has visited. NOT the same as the profile
+  // index — these are discovered at runtime by content scripts and used to
+  // populate the active-tab pill row, suggest "Create profile?" prompts,
+  // and feed the catalog source picker on the default profile.
+  //
+  // Only becomes a profile if/when the user explicitly creates one.
+  async function recordKnownHost(host) {
+    if (!host || host === RESERVED_PROFILE_ID) return;
+    const { knownZendeskHosts } = await new Promise((r) =>
+      chrome.storage.local.get({ knownZendeskHosts: [] }, r)
+    );
+    const arr = Array.isArray(knownZendeskHosts) ? knownZendeskHosts : [];
+    if (arr.includes(host)) return;
+    arr.push(host);
+    arr.sort();
+    await new Promise((r) => chrome.storage.local.set({ knownZendeskHosts: arr }, r));
+  }
+
+  async function loadKnownHosts() {
+    const { knownZendeskHosts } = await new Promise((r) =>
+      chrome.storage.local.get({ knownZendeskHosts: [] }, r)
+    );
+    return Array.isArray(knownZendeskHosts) ? knownZendeskHosts.slice() : [];
+  }
+
   async function ensureProfileExists(profileId) {
     if (profileId === RESERVED_PROFILE_ID) return;
     const idx = await loadProfileIndex();
@@ -561,6 +586,87 @@
     await new Promise((r) => chrome.storage.sync.set({ profileIndex: idx }, r));
   }
 
+  /**
+   * Determine whether a profile has any explicit settings of its own (i.e.
+   * the user has actually customized it). A profile is "empty" when none
+   * of its sync/local section keys exist — the profile entry was created
+   * automatically (likely by an old version of the content script) but
+   * the user never opened the options page for it.
+   */
+  async function profileHasAnySettings(profileId) {
+    if (profileId === RESERVED_PROFILE_ID) return true;
+    const syncKeys = [];
+    const localKeys = [];
+    for (const section of SECTION_NAMES) {
+      const strat = SECTION_STRATEGY[section];
+      (strat.area === "sync" ? syncKeys : localKeys).push(storageKey(section, profileId));
+    }
+    const [syncRes, localRes] = await Promise.all([
+      new Promise((r) => chrome.storage.sync.get(syncKeys, r)),
+      new Promise((r) => chrome.storage.local.get(localKeys, r)),
+    ]);
+    return [...syncKeys, ...localKeys].some(
+      (k) => (k in syncRes && syncRes[k] != null) || (k in localRes && localRes[k] != null)
+    );
+  }
+
+  /**
+   * One-time migration from v0.6.x model to v0.7.0 model.
+   *   v0.6.x: every visited host was auto-created as a profile.
+   *   v0.7.0: profiles are user-explicit; visited hosts go to knownZendeskHosts.
+   *
+   * Strategy (per user choice in v0.7.0 plan): preserve any profile that
+   * has actual settings forked. Demote profiles with zero settings to
+   * known-hosts (so they still show up as pills, but don't clutter the
+   * profile dropdown).
+   *
+   * Idempotent: marks completion via a sentinel key. Safe to call from
+   * multiple contexts; each will short-circuit after the first runs.
+   */
+  const MIGRATION_KEY = "v07ProfileSplitMigrated";
+  let migrationPromise = null;
+
+  async function migrateProfileIndexV07() {
+    if (migrationPromise) return migrationPromise;
+    migrationPromise = (async () => {
+      const { [MIGRATION_KEY]: done } = await new Promise((r) =>
+        chrome.storage.local.get({ [MIGRATION_KEY]: false }, r)
+      );
+      if (done) return { migrated: false };
+
+      const idx = await loadProfileIndex();
+      const tenantProfiles = idx.profiles.filter((p) => p !== RESERVED_PROFILE_ID);
+      const demoted = [];
+      const kept = [RESERVED_PROFILE_ID];
+      for (const p of tenantProfiles) {
+        if (await profileHasAnySettings(p)) kept.push(p);
+        else demoted.push(p);
+      }
+
+      // Demoted ones go into knownZendeskHosts. Anything they discovered
+      // (catalogs, health) stays in local storage — useful as a hint.
+      if (demoted.length) {
+        const existing = await loadKnownHosts();
+        const merged = Array.from(new Set([...existing, ...demoted])).sort();
+        await new Promise((r) =>
+          chrome.storage.local.set({ knownZendeskHosts: merged }, r)
+        );
+      }
+
+      // Update profileIndex if we actually demoted anything.
+      if (demoted.length) {
+        await new Promise((r) =>
+          chrome.storage.sync.set({ profileIndex: { profiles: kept } }, r)
+        );
+      }
+      await new Promise((r) =>
+        chrome.storage.local.set({ [MIGRATION_KEY]: true }, r)
+      );
+      return { migrated: true, kept, demoted };
+    })();
+    return migrationPromise;
+  }
+
   /* ============================== utilities =========================== */
 
   function cssAttr(s) {
@@ -589,5 +695,7 @@
     deepMerge, cssAttr, depthFromPath, viewKey, groupKey,
     storageKey, areaApi,
     loadProfileIndex, ensureProfileExists, deleteProfile,
+    recordKnownHost, loadKnownHosts,
+    profileHasAnySettings, migrateProfileIndexV07,
   });
 })();

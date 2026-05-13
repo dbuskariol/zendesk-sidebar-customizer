@@ -14,7 +14,7 @@
 
   const {
     SELECTORS, PREFIXES, RE, SECTION_NAMES,
-    ProfileStore, ensureProfileExists,
+    ProfileStore, recordKnownHost, migrateProfileIndexV07,
     cssAttr, depthFromPath, viewKey, groupKey,
     RESERVED_PROFILE_ID,
   } = window.ZVT;
@@ -638,6 +638,16 @@
       lastZendeskHost: host,
       lastZendeskUrl: `${window.location.origin}/agent`,
     });
+    // Track this host as "known" without auto-creating a profile for it.
+    // The user creates an explicit profile only via the popup or options.
+    recordKnownHost(host).catch(() => {});
+    // Announce ourselves so any open options page / popup can refresh
+    // immediately without waiting for the next 5s status poll.
+    try {
+      chrome.runtime.sendMessage({ type: "zvt:tabMounted", host });
+    } catch {
+      /* extension context may be reloading */
+    }
   }
 
   /* =============================== health ============================ */
@@ -819,7 +829,9 @@
   /* ============================== boot ============================== */
 
   (async function boot() {
-    await ensureProfileExists(PROFILE_ID);
+    // Run the v0.7.0 migration once before any reads — it's idempotent and
+    // self-short-circuiting via a sentinel key in chrome.storage.local.
+    await migrateProfileIndexV07().catch(() => {});
     await profile.load();
     applyEnabledState();
     tryMountSidebar(15);

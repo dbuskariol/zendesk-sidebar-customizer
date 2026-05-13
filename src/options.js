@@ -20,6 +20,7 @@ const {
   DEFAULT_PREFS, DEFAULT_HIDE, DEFAULT_DENSITY, DEFAULT_ORDER, DEFAULT_THEME,
   RE, viewKey, groupKey, deepMerge,
   loadProfileIndex, ensureProfileExists, deleteProfile,
+  loadKnownHosts, migrateProfileIndexV07,
 } = window.ZVT;
 
 /* ============================== constants ============================ */
@@ -151,6 +152,9 @@ const BUILTIN_TEMPLATES = [
 let editingProfileId = RESERVED_PROFILE_ID;
 let store = null;
 let allProfiles = [RESERVED_PROFILE_ID];
+let knownHosts = [];           // discovered Zendesk hosts (not necessarily profiles)
+let openZendeskTabs = [];      // [{tabId, host, windowId, active}]
+let activeZendeskHost = null;  // host of the currently-focused Zendesk tab, if any
 let views = [];
 let groups = [];
 let containers = [];
@@ -162,8 +166,26 @@ let allHideExpandedHinted = false;
 let lastReorderContainer = null;
 let expandedCustomViewId = null;
 
+// Generation token guards switchEditingProfile() against stale async renders.
+// If the user clicks profile A then profile B in quick succession, only the
+// completion of the latest switch should call renderAll().
+let switchGen = 0;
+
+// When editing the default ("Shared defaults") profile, Hide/Customize/Reorder
+// borrow the catalog from another tenant so the user has something to act on.
+// Source defaults to the active Zendesk tab; falls back to lastZendeskHost,
+// then to any known host. User can override via a dropdown in the topbar.
+let defaultCatalogSource = null;
+
 let previewTimer = 0;
 let pendingPreviewPatch = null;
+
+// User-facing label for the reserved profile. Internal id stays "default".
+const SHARED_DEFAULTS_LABEL = "Shared defaults";
+
+function profileLabel(id) {
+  return id === RESERVED_PROFILE_ID ? SHARED_DEFAULTS_LABEL : id;
+}
 
 // Local-write "color-commit" suppression. The ONLY case we need to suppress
 // the storage-echo re-render is right after a color-picker commit: the
@@ -212,10 +234,12 @@ const els = {};
 function bindEls() {
   for (const id of [
     "profile-select","profile-new","profile-delete","status-pill","open-zendesk","reset-everything",
+    "open-tabs-row","toast-root",
     "enabled","compact","themed","reorderEnabled","reorder-mode-set",
     "general-profile-id","general-fork-state",
     "level-grid","global-grid","palette-grid","theme-level-grid",
     "density-fork","theme-fork","hide-fork","customViews-fork","order-fork",
+    "hide-catalog-banner","customize-catalog-banner","reorder-catalog-banner",
     "hide-search","expand-all","collapse-all","show-all","hide-all","rescan",
     "hide-status","tree","empty",
     "manual-add-form","manual-add-input","manual-add-title","manual-add-status",
@@ -257,6 +281,11 @@ async function setEditingProfileId(id) {
 }
 
 async function loadDiscoveryForProfile(profileId) {
+  if (!profileId || profileId === RESERVED_PROFILE_ID) {
+    // No real catalog (default profile with no source picked yet).
+    views = []; groups = []; containers = [];
+    return;
+  }
   const keys = [
     `discoveredViews:${profileId}`,
     `discoveredGroups:${profileId}`,
@@ -544,9 +573,9 @@ function renderGeneral() {
   for (const radio of els.reorderModeSet.querySelectorAll('input[type="radio"]')) {
     radio.checked = radio.value === prefs.reorderMode;
   }
-  els.generalProfileId.textContent = editingProfileId;
+  els.generalProfileId.textContent = profileLabel(editingProfileId);
   if (editingProfileId === RESERVED_PROFILE_ID) {
-    els.generalForkState.textContent = "(default profile — applies to any tenant without an explicit profile)";
+    els.generalForkState.textContent = "— applies to any tenant without an explicit profile";
   } else {
     els.generalForkState.textContent = "";
   }
@@ -756,6 +785,70 @@ function matchesQuery(v, q) {
 function sortChildren(map) { return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name)); }
 function sortViews(arr) { return arr.slice().sort((a, b) => (a.title || "").localeCompare(b.title || "")); }
 
+/**
+ * Render the "catalog source" banner shown above Hide / Customize / Reorder
+ * when editing the Shared defaults profile. Lets the user pick which
+ * tenant's discovered views they want to act on.
+ *
+ * No-ops (and hides the banner) when editing a tenant profile, since the
+ * profile IS its own catalog.
+ */
+function renderCatalogBanners() {
+  const banners = [els.hideCatalogBanner, els.customizeCatalogBanner, els.reorderCatalogBanner].filter(Boolean);
+  if (editingProfileId !== RESERVED_PROFILE_ID) {
+    for (const b of banners) { b.hidden = true; b.innerHTML = ""; }
+    return;
+  }
+  // Build the list of hosts we have discovered data for.
+  const profilesWithData = allProfiles.filter((p) => p !== RESERVED_PROFILE_ID);
+  const sources = Array.from(new Set([...profilesWithData, ...knownHosts])).sort();
+  const current = catalogSourceFor(RESERVED_PROFILE_ID);
+
+  for (const banner of banners) {
+    banner.hidden = false;
+    banner.innerHTML = "";
+    if (!sources.length) {
+      banner.classList.add("empty-source");
+      banner.innerHTML = `
+        <span class="catalog-banner-text">
+          No tenant catalogs available yet. Open a Zendesk tab so the extension can discover views, or
+          <button type="button" class="link-btn switch-active">click here</button>
+          to use the active tab once you have one.
+        </span>`;
+      continue;
+    }
+    banner.classList.remove("empty-source");
+    const labelText = `Editing ${SHARED_DEFAULTS_LABEL}. Showing views from`;
+    const sel = document.createElement("select");
+    sel.className = "catalog-source-select";
+    sel.setAttribute("aria-label", "Catalog source for shared defaults");
+    for (const host of sources) {
+      const opt = document.createElement("option");
+      opt.value = host;
+      opt.textContent = host + (allProfiles.includes(host) ? " (profile)" : " (no profile)");
+      if (host === current) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.addEventListener("change", async () => {
+      defaultCatalogSource = sel.value;
+      await loadDiscoveryForProfile(defaultCatalogSource);
+      renderHide();
+      renderCustomize();
+      renderReorder();
+      renderDiag();
+    });
+    const lbl = document.createElement("span");
+    lbl.className = "catalog-banner-text";
+    lbl.textContent = labelText + " ";
+    banner.appendChild(lbl);
+    banner.appendChild(sel);
+    const note = document.createElement("span");
+    note.className = "catalog-banner-note";
+    note.textContent = " — changes apply to any tenant inheriting from defaults.";
+    banner.appendChild(note);
+  }
+}
+
 function renderHide() {
   const q = (els.hideSearch.value || "").trim().toLowerCase();
   const filtered = views.filter((v) => matchesQuery(v, q));
@@ -765,7 +858,18 @@ function renderHide() {
   if (views.length === 0 && groups.length === 0) {
     els.tree.hidden = true;
     els.empty.hidden = false;
-    els.hideStatus.textContent = "0 views, 0 groups discovered for this profile.";
+    const emptyText = document.getElementById("empty-text");
+    if (emptyText) {
+      if (editingProfileId === RESERVED_PROFILE_ID) {
+        emptyText.textContent =
+          "No tenant catalogs available yet. Open a Zendesk tab so the extension can discover views, then pick a source above.";
+      } else {
+        emptyText.innerHTML = `No views discovered for <strong>${editingProfileId}</strong> yet. Open <code>${editingProfileId}/agent</code> in a tab.`;
+      }
+    }
+    els.hideStatus.textContent = editingProfileId === RESERVED_PROFILE_ID
+      ? "Editing Shared defaults. No catalog source available."
+      : "0 views, 0 groups discovered for this profile.";
     renderForkLine("hide", "hide-fork");
     return;
   }
@@ -936,20 +1040,21 @@ function setAllHideExpanded(open) {
 }
 
 async function onRescan() {
-  els.hideStatus.textContent = "Looking for an open Zendesk tab on this profile…";
+  const targetHost = catalogSourceFor(editingProfileId);
+  els.hideStatus.textContent = `Looking for an open ${targetHost === RESERVED_PROFILE_ID ? "Zendesk" : targetHost} tab…`;
   const tabs = await chrome.tabs.query({ url: ZENDESK_URL_MATCH });
   const matching = tabs.filter((t) => {
-    try { return new URL(t.url).host === editingProfileId; }
+    try { return new URL(t.url).host === targetHost; }
     catch { return false; }
   });
   if (!matching.length) {
-    els.hideStatus.textContent = `No open ${editingProfileId === RESERVED_PROFILE_ID ? "Zendesk" : editingProfileId} tab. Use [Open Zendesk] above.`;
+    els.hideStatus.textContent = `No open ${targetHost === RESERVED_PROFILE_ID ? "Zendesk" : targetHost} tab. Use [Open Zendesk] above.`;
     return;
   }
   let ok = 0;
   for (const t of matching) {
     try {
-      const res = await chrome.tabs.sendMessage(t.id, { type: "zvt:rescan", profileId: editingProfileId });
+      const res = await chrome.tabs.sendMessage(t.id, { type: "zvt:rescan", profileId: targetHost });
       if (res?.ok) ok++;
     } catch {}
   }
@@ -958,7 +1063,7 @@ async function onRescan() {
     return;
   }
   setTimeout(async () => {
-    await loadDiscoveryForProfile(editingProfileId);
+    await loadDiscoveryForProfile(targetHost);
     renderHide();
     renderCustomize();
     renderReorder();
@@ -983,11 +1088,18 @@ async function onManualAdd(e) {
   }
   const title = (els.manualAddTitle.value || "").trim() || `View ${id}`;
   const href = `/agent/filters/${id}`;
+  // Manual-add writes to the catalog source for the profile we're editing.
+  // For tenant profiles that's the profile itself; for default it's the
+  // currently-selected catalog source (so the manually-added view shows up
+  // in the same list the user is browsing).
+  const catalogTarget = catalogSourceFor(editingProfileId);
   if (!views.find((v) => String(v.id) === id)) {
     views.push({ id, title, href, groupPath: ["Manually added"], depth: 2, lastSeenAt: Date.now(), manual: true });
-    await new Promise((r) =>
-      chrome.storage.local.set({ [`discoveredViews:${editingProfileId}`]: views }, r)
-    );
+    if (catalogTarget && catalogTarget !== RESERVED_PROFILE_ID) {
+      await new Promise((r) =>
+        chrome.storage.local.set({ [`discoveredViews:${catalogTarget}`]: views }, r)
+      );
+    }
   }
   await setViewHidden(id, true);
   els.manualAddInput.value = "";
@@ -1721,19 +1833,65 @@ function renderDiag() {
   els.diag.textContent = JSON.stringify(diag, null, 2);
 }
 
-/* ============================== status pill ======================== */
+/* ====================== live tab + host context ===================== */
 
-async function refreshStatus() {
-  let tabCount = 0;
-  let matching = 0;
+/**
+ * Refresh `openZendeskTabs` and `activeZendeskHost` from the live tabs.
+ * Called from event listeners + storage hooks. Cheap — single tabs.query.
+ */
+async function refreshTabContext() {
+  let tabs = [];
   try {
-    const tabs = await chrome.tabs.query({ url: ZENDESK_URL_MATCH });
-    tabCount = tabs.length;
-    matching = tabs.filter((t) => {
-      try { return new URL(t.url).host === editingProfileId; } catch { return false; }
-    }).length;
-  } catch {}
+    tabs = await chrome.tabs.query({ url: ZENDESK_URL_MATCH });
+  } catch {
+    tabs = [];
+  }
+  openZendeskTabs = tabs
+    .map((t) => {
+      let host = null;
+      try { host = new URL(t.url).host; } catch {}
+      return host
+        ? { tabId: t.id, host, windowId: t.windowId, active: !!t.active, lastAccessed: t.lastAccessed || 0 }
+        : null;
+    })
+    .filter(Boolean);
+
+  // Determine the active Zendesk host. Priority:
+  //   1. The tab marked active in the focused window.
+  //   2. Most recently accessed Zendesk tab.
+  //   3. Most recently seen host the content script wrote.
+  let active = null;
+  try {
+    const focused = await chrome.windows.getLastFocused({ populate: false });
+    const inFocused = openZendeskTabs.find(
+      (t) => t.windowId === focused.id && t.active
+    );
+    if (inFocused) active = inFocused.host;
+  } catch { /* may fail mid-shutdown */ }
+  if (!active && openZendeskTabs.length) {
+    const sorted = openZendeskTabs.slice().sort((a, b) => b.lastAccessed - a.lastAccessed);
+    active = sorted[0].host;
+  }
+  if (!active) {
+    const { lastZendeskHost } = await new Promise((r) =>
+      chrome.storage.local.get({ lastZendeskHost: null }, r)
+    );
+    active = lastZendeskHost || null;
+  }
+  activeZendeskHost = active;
+
+  // Re-render the topbar pill row + status pill. Cheap; no nuked controls.
+  renderOpenTabsRow();
+  renderStatusPill();
+}
+
+function renderStatusPill() {
+  const tabCount = openZendeskTabs.length;
+  const matching = editingProfileId === RESERVED_PROFILE_ID
+    ? tabCount
+    : openZendeskTabs.filter((t) => t.host === editingProfileId).length;
   const health = healthByProfile[editingProfileId] || null;
+
   if (tabCount === 0) {
     els.statusPill.className = "pill warn";
     els.statusPill.textContent = "⚠ No Zendesk tab open";
@@ -1751,6 +1909,80 @@ async function refreshStatus() {
     els.statusPill.textContent = `✓ Live preview · ${matching || tabCount} tab(s)`;
   }
 }
+
+/**
+ * Render the row of open-Zendesk-tab pills under the topbar. Each pill is
+ * clickable: clicking it switches the editing profile to that host
+ * (creating it if necessary). The pill matching the active tab gets a
+ * distinct highlight so the user always knows what they're focused on.
+ */
+function renderOpenTabsRow() {
+  if (!els.openTabsRow) return;
+  els.openTabsRow.innerHTML = "";
+  if (!openZendeskTabs.length) {
+    const empty = document.createElement("span");
+    empty.className = "open-tab-empty";
+    empty.textContent = "No Zendesk tabs open";
+    els.openTabsRow.appendChild(empty);
+    return;
+  }
+  // Dedupe by host — multiple tabs on the same tenant collapse to one pill.
+  const byHost = new Map();
+  for (const t of openZendeskTabs) {
+    const cur = byHost.get(t.host);
+    if (!cur || t.lastAccessed > cur.lastAccessed) byHost.set(t.host, t);
+  }
+  const hosts = Array.from(byHost.keys()).sort();
+  for (const host of hosts) {
+    const isActive = host === activeZendeskHost;
+    const isEditing = host === editingProfileId;
+    const isProfile = allProfiles.includes(host);
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className =
+      "open-tab-pill" +
+      (isActive ? " active-tab" : "") +
+      (isEditing ? " editing" : "") +
+      (isProfile ? "" : " host-only");
+    pill.title = isActive
+      ? `${host} — currently focused tab. Click to edit this profile.`
+      : `${host} — click to switch to this profile.`;
+    pill.innerHTML = `
+      ${isActive ? '<span class="dot" aria-label="focused"></span>' : ""}
+      <span class="host">${escapeHtml(host)}</span>
+      ${isProfile ? "" : '<span class="tag">no profile</span>'}
+    `;
+    pill.addEventListener("click", async () => {
+      if (host === editingProfileId) return;
+      // Create profile if needed (user is explicitly opting in by clicking).
+      if (!allProfiles.includes(host)) {
+        await ensureProfileExists(host);
+        allProfiles = (await loadProfileIndex()).profiles;
+      }
+      await switchEditingProfile(host);
+      toast(`Editing ${host}`);
+    });
+    els.openTabsRow.appendChild(pill);
+  }
+}
+
+// Lightweight non-blocking notification. Single instance at a time.
+let toastTimer = 0;
+function toast(msg) {
+  if (!els.toastRoot) return;
+  els.toastRoot.textContent = msg;
+  els.toastRoot.classList.add("show");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    els.toastRoot.classList.remove("show");
+  }, 2400);
+}
+
+/* ============================== status pill ======================== */
+
+// Kept as a thin alias so legacy call sites keep working; the real refresh
+// pipeline is now refreshTabContext() which updates the row + pill together.
+async function refreshStatus() { return refreshTabContext(); }
 
 /* =========================== fork-state line ======================== */
 
@@ -1781,10 +2013,16 @@ function renderForkLine(section, elemId) {
 
 function renderProfileSwitcher() {
   els.profileSelect.innerHTML = "";
+  // Reconcile: if editingProfileId no longer exists (e.g. another device
+  // deleted it via sync), silently fall back to default before rendering.
+  if (!allProfiles.includes(editingProfileId)) {
+    editingProfileId = RESERVED_PROFILE_ID;
+    setEditingProfileId(RESERVED_PROFILE_ID).catch(() => {});
+  }
   for (const id of allProfiles) {
     const opt = document.createElement("option");
     opt.value = id;
-    opt.textContent = id;
+    opt.textContent = profileLabel(id);
     if (id === editingProfileId) opt.selected = true;
     els.profileSelect.appendChild(opt);
   }
@@ -1811,6 +2049,7 @@ function bindProfileSwitcher() {
     await ensureProfileExists(host);
     allProfiles = (await loadProfileIndex()).profiles;
     await switchEditingProfile(host);
+    toast(`Created profile ${host}`);
   });
   els.profileDelete.addEventListener("click", async () => {
     if (editingProfileId === RESERVED_PROFILE_ID) return;
@@ -1819,15 +2058,44 @@ function bindProfileSwitcher() {
     await deleteProfile(target);
     allProfiles = (await loadProfileIndex()).profiles;
     await switchEditingProfile(RESERVED_PROFILE_ID);
+    toast(`Deleted profile ${target}`);
   });
 }
 
+/**
+ * Switch the profile being edited. Generation-guarded so that rapid
+ * back-to-back switches don't render stale data: if a newer call has
+ * started before this one finishes loading discovery, we abandon ours.
+ */
 async function switchEditingProfile(id) {
+  const myGen = ++switchGen;
   await setEditingProfileId(id);
+  if (myGen !== switchGen) return;
   store = new ProfileStore(id);
   await store.load();
-  await loadDiscoveryForProfile(id);
+  if (myGen !== switchGen) return;
+  await loadDiscoveryForProfile(catalogSourceFor(id));
+  if (myGen !== switchGen) return;
   renderAll();
+}
+
+/**
+ * Determine which host's discovery catalog to display when editing a profile.
+ * Tenant profile = its own host. Default profile = pick a "source" tenant
+ * (active tab → lastZendeskHost → first known host) so the user has views
+ * to actually see in the Hide/Customize/Reorder sections.
+ */
+function catalogSourceFor(profileId) {
+  if (profileId !== RESERVED_PROFILE_ID) return profileId;
+  if (defaultCatalogSource && (allProfiles.includes(defaultCatalogSource) || knownHosts.includes(defaultCatalogSource))) {
+    return defaultCatalogSource;
+  }
+  if (activeZendeskHost) return activeZendeskHost;
+  // Pick anything we have data for. Prefer profiles over bare known hosts.
+  const tenantProfile = allProfiles.find((p) => p !== RESERVED_PROFILE_ID);
+  if (tenantProfile) return tenantProfile;
+  if (knownHosts.length) return knownHosts[0];
+  return RESERVED_PROFILE_ID; // no real catalog available
 }
 
 /* ============================== modal ============================= */
@@ -1921,6 +2189,8 @@ function bindSectionNav() {
 
 function renderAll() {
   renderProfileSwitcher();
+  renderOpenTabsRow();
+  renderCatalogBanners();
   renderGeneral();
   renderDensity();
   renderTheme();
@@ -1929,7 +2199,7 @@ function renderAll() {
   renderReorder();
   renderTemplates();
   renderDiag();
-  refreshStatus();
+  renderStatusPill();
 }
 
 function bindAll() {
@@ -2025,8 +2295,15 @@ function bindAll() {
 
     if (area === "sync" && changes.profileIndex) {
       allProfiles = (changes.profileIndex.newValue?.profiles) || [RESERVED_PROFILE_ID];
-      renderProfileSwitcher();
-      renderDiag();
+      // If the active edit target was removed (e.g. by another device),
+      // bail to default cleanly. renderProfileSwitcher reconciles too.
+      if (!allProfiles.includes(editingProfileId)) {
+        switchEditingProfile(RESERVED_PROFILE_ID);
+      } else {
+        renderProfileSwitcher();
+        renderOpenTabsRow(); // pill row reflects which hosts have profiles
+        renderDiag();
+      }
     }
 
     if (area !== "local") return;
@@ -2036,24 +2313,29 @@ function bindAll() {
     let healthChanged = false;
     let discoveryChanged = false;
     let templatesChanged = false;
+    let knownHostsChanged = false;
+    let editingChanged = false;
+    let lastHostChanged = false;
     for (const k of Object.keys(changes)) {
       if (k.startsWith("selectorHealth:")) healthChanged = true;
       if (k === "templates") templatesChanged = true;
+      if (k === "knownZendeskHosts") knownHostsChanged = true;
+      if (k === "editingProfileId") editingChanged = true;
+      if (k === "lastZendeskHost") lastHostChanged = true;
       if (
         (k.startsWith("discoveredViews:") ||
          k.startsWith("discoveredGroups:") ||
          k.startsWith("discoveredContainers:")) &&
-        k.endsWith(`:${editingProfileId}`)
+        k.endsWith(`:${catalogSourceFor(editingProfileId)}`)
       ) discoveryChanged = true;
     }
     if (healthChanged) {
       await loadAllHealth();
-      refreshStatus();
+      renderStatusPill();
       renderDiag();
     }
     if (discoveryChanged) {
-      await loadDiscoveryForProfile(editingProfileId);
-      // Discovery affects sections that show discovered items.
+      await loadDiscoveryForProfile(catalogSourceFor(editingProfileId));
       renderHide();
       renderCustomize();
       renderReorder();
@@ -2063,24 +2345,76 @@ function bindAll() {
       userTemplates = changes.templates.newValue || [];
       renderTemplates();
     }
+    if (knownHostsChanged) {
+      knownHosts = Array.isArray(changes.knownZendeskHosts.newValue)
+        ? changes.knownZendeskHosts.newValue
+        : [];
+      renderOpenTabsRow();
+    }
+    if (lastHostChanged) {
+      // Refresh the live tab context so the active-tab indicator catches up.
+      refreshTabContext();
+    }
+    // Cross-context handoff: another surface (popup, etc.) wants us to
+    // edit a different profile. Honor it without forcing the user to refresh.
+    if (editingChanged) {
+      const next = changes.editingProfileId.newValue;
+      if (next && next !== editingProfileId) {
+        switchEditingProfile(next).then(() => toast(`Switched to ${profileLabel(next)}`));
+      }
+    }
   });
 
-  setInterval(refreshStatus, STATUS_REFRESH_MS);
+  /* -------------------- live tab/window event listeners ----------------- */
+
+  // Replaces the v0.6 5s polling. Each listener calls refreshTabContext,
+  // which is cheap (single tabs.query + DOM updates of the pill row + status).
+  const onTabsChanged = () => refreshTabContext();
+  if (chrome.tabs?.onUpdated)        chrome.tabs.onUpdated.addListener(onTabsChanged);
+  if (chrome.tabs?.onRemoved)        chrome.tabs.onRemoved.addListener(onTabsChanged);
+  if (chrome.tabs?.onActivated)      chrome.tabs.onActivated.addListener(onTabsChanged);
+  if (chrome.tabs?.onCreated)        chrome.tabs.onCreated.addListener(onTabsChanged);
+  if (chrome.windows?.onFocusChanged)chrome.windows.onFocusChanged.addListener(onTabsChanged);
+
+  // Content scripts announce their mount via runtime.sendMessage so the
+  // options page can respond INSTANTLY, before the storage write or tab
+  // event has propagated.
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.type === "zvt:tabMounted") refreshTabContext();
+  });
+
+  // Safety net: if the event-driven path misses something (rare; usually
+  // only across extension reloads), poll every 30s as a backstop. This is
+  // a 6× reduction from the v0.6 5s polling and exists only as belt-and-braces.
+  setInterval(refreshTabContext, 30_000);
 }
 
 /* ============================== boot ============================== */
 
 (async function init() {
   bindEls();
+  // Run the v0.7.0 migration first — idempotent, short-circuits after first run.
+  // Demotes empty auto-created profiles to known-hosts so they don't clutter
+  // the dropdown but still appear as pills.
+  await migrateProfileIndexV07().catch(() => {});
+
   allProfiles = (await loadProfileIndex()).profiles;
+  knownHosts = await loadKnownHosts();
   editingProfileId = await loadEditingProfileId();
   store = new ProfileStore(editingProfileId);
   await store.load();
   await Promise.all([
-    loadDiscoveryForProfile(editingProfileId),
+    loadDiscoveryForProfile(editingProfileId === RESERVED_PROFILE_ID ? null : editingProfileId),
     loadAllHealth(),
     loadUserTemplates(),
+    refreshTabContext(),
   ]);
+  // For default profile: reload discovery using the resolved catalog source
+  // (active tab → lastZendeskHost → first known). refreshTabContext sets
+  // activeZendeskHost so we have to call this after.
+  if (editingProfileId === RESERVED_PROFILE_ID) {
+    await loadDiscoveryForProfile(catalogSourceFor(RESERVED_PROFILE_ID));
+  }
   bindAll();
   renderAll();
 })();
