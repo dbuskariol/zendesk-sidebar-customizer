@@ -66,37 +66,44 @@ const THEME_LEVEL_TOKENS = [
   { key: "fgColor", label: "Text color" },
 ];
 
+// Density presets — calibrated against the actual Zendesk intrinsic
+// values (see lib.js INTRINSIC_LEVEL/GLOBAL). The biggest visual lever
+// is `rowMinHeight` (Zendesk's 40px is what makes rows tall); shrinking
+// that is what makes "compact" feel compact. fontSize/padding are
+// secondary tweaks.
 const PRESETS = {
   "ultra-compact": {
     level: {
-      "1": { fontSize: 13, rowPaddingTop: 0, rowPaddingBottom: 0, rowPaddingLeft: 4, rowPaddingRight: 4, indent: 0 },
-      "2": { fontSize: 12, rowPaddingTop: 0, rowPaddingBottom: 0, rowPaddingLeft: 4, rowPaddingRight: 4, indent: 4 },
-      "3": { fontSize: 12, rowPaddingTop: 0, rowPaddingBottom: 0, rowPaddingLeft: 4, rowPaddingRight: 4, indent: 4 },
-      "4": { fontSize: 11, rowPaddingTop: 0, rowPaddingBottom: 0, rowPaddingLeft: 4, rowPaddingRight: 4, indent: 4 },
-      "5": { fontSize: 11, rowPaddingTop: 0, rowPaddingBottom: 0, rowPaddingLeft: 4, rowPaddingRight: 4, indent: 4 },
+      "1": { fontSize: 12, lineHeight: 14, rowPaddingTop: 0, rowPaddingBottom: 0, rowPaddingLeft: 6,  rowPaddingRight: 6,  rowMinHeight: 0,  indent: 0 },
+      "2": { fontSize: 12, lineHeight: 14, rowPaddingTop: 0, rowPaddingBottom: 0, rowPaddingLeft: 6,  rowPaddingRight: 6,  rowMinHeight: 0,  indent: 4 },
+      "3": { fontSize: 12, lineHeight: 14, rowPaddingTop: 0, rowPaddingBottom: 0, rowPaddingLeft: 6,  rowPaddingRight: 6,  rowMinHeight: 0,  indent: 4 },
+      "4": { fontSize: 11, lineHeight: 14, rowPaddingTop: 0, rowPaddingBottom: 0, rowPaddingLeft: 6,  rowPaddingRight: 6,  rowMinHeight: 0,  indent: 4 },
+      "5": { fontSize: 11, lineHeight: 14, rowPaddingTop: 0, rowPaddingBottom: 0, rowPaddingLeft: 6,  rowPaddingRight: 6,  rowMinHeight: 0,  indent: 4 },
     },
-    global: { rowGap: 0, iconSize: 12, countBadgeFontSize: 10, countBadgeMargin: 4, countBadgePadding: 0 },
+    global: { rowGap: 0, iconSize: 10, countBadgeFontSize: 10, countBadgeLineHeight: 12, countBadgeMargin: 4, countBadgePadding: 0 },
   },
   "compact": {
     level: {
-      "1": { fontSize: 14, rowPaddingTop: 1, rowPaddingBottom: 1, rowPaddingLeft: 6, rowPaddingRight: 6, indent: 0 },
-      "2": { fontSize: 13, rowPaddingTop: 1, rowPaddingBottom: 1, rowPaddingLeft: 6, rowPaddingRight: 6, indent: 6 },
-      "3": { fontSize: 12, rowPaddingTop: 1, rowPaddingBottom: 1, rowPaddingLeft: 6, rowPaddingRight: 6, indent: 6 },
-      "4": { fontSize: 12, rowPaddingTop: 1, rowPaddingBottom: 1, rowPaddingLeft: 6, rowPaddingRight: 6, indent: 4 },
-      "5": { fontSize: 11, rowPaddingTop: 1, rowPaddingBottom: 1, rowPaddingLeft: 6, rowPaddingRight: 6, indent: 4 },
+      "1": { fontSize: 13, lineHeight: 16, rowPaddingTop: 1, rowPaddingBottom: 1, rowPaddingLeft: 8,  rowPaddingRight: 8,  rowMinHeight: 22, indent: 0 },
+      "2": { fontSize: 13, lineHeight: 16, rowPaddingTop: 1, rowPaddingBottom: 1, rowPaddingLeft: 8,  rowPaddingRight: 8,  rowMinHeight: 22, indent: 6 },
+      "3": { fontSize: 12, lineHeight: 16, rowPaddingTop: 1, rowPaddingBottom: 1, rowPaddingLeft: 8,  rowPaddingRight: 8,  rowMinHeight: 22, indent: 6 },
+      "4": { fontSize: 12, lineHeight: 16, rowPaddingTop: 1, rowPaddingBottom: 1, rowPaddingLeft: 8,  rowPaddingRight: 8,  rowMinHeight: 22, indent: 4 },
+      "5": { fontSize: 12, lineHeight: 16, rowPaddingTop: 1, rowPaddingBottom: 1, rowPaddingLeft: 8,  rowPaddingRight: 8,  rowMinHeight: 22, indent: 4 },
     },
-    global: { rowGap: 1, iconSize: 14, countBadgeFontSize: 11, countBadgeMargin: 6, countBadgePadding: 1 },
+    global: { rowGap: 0, iconSize: 12, countBadgeFontSize: 11, countBadgeLineHeight: 14, countBadgeMargin: 4, countBadgePadding: 0 },
   },
   "comfortable": {
     level: {
-      "1": { fontSize: 15, rowPaddingTop: 4, rowPaddingBottom: 4, rowPaddingLeft: 10, rowPaddingRight: 10, indent: 0 },
-      "2": { fontSize: 14, rowPaddingTop: 3, rowPaddingBottom: 3, rowPaddingLeft: 10, rowPaddingRight: 10, indent: 10 },
-      "3": { fontSize: 13, rowPaddingTop: 3, rowPaddingBottom: 3, rowPaddingLeft: 10, rowPaddingRight: 10, indent: 10 },
-      "4": { fontSize: 13, rowPaddingTop: 3, rowPaddingBottom: 3, rowPaddingLeft: 10, rowPaddingRight: 10, indent: 8 },
-      "5": { fontSize: 12, rowPaddingTop: 3, rowPaddingBottom: 3, rowPaddingLeft: 10, rowPaddingRight: 10, indent: 8 },
+      "1": { fontSize: 14, lineHeight: 18, rowPaddingTop: 2, rowPaddingBottom: 2, rowPaddingLeft: 12, rowPaddingRight: 12, rowMinHeight: 32, indent: 0 },
+      "2": { fontSize: 14, lineHeight: 18, rowPaddingTop: 2, rowPaddingBottom: 2, rowPaddingLeft: 12, rowPaddingRight: 12, rowMinHeight: 32, indent: 12 },
+      "3": { fontSize: 13, lineHeight: 18, rowPaddingTop: 2, rowPaddingBottom: 2, rowPaddingLeft: 12, rowPaddingRight: 12, rowMinHeight: 32, indent: 12 },
+      "4": { fontSize: 13, lineHeight: 18, rowPaddingTop: 2, rowPaddingBottom: 2, rowPaddingLeft: 12, rowPaddingRight: 12, rowMinHeight: 32, indent: 8 },
+      "5": { fontSize: 13, lineHeight: 18, rowPaddingTop: 2, rowPaddingBottom: 2, rowPaddingLeft: 12, rowPaddingRight: 12, rowMinHeight: 32, indent: 8 },
     },
-    global: { rowGap: 2, iconSize: 16, countBadgeFontSize: 12, countBadgeMargin: 8, countBadgePadding: 2 },
+    global: { rowGap: 1, iconSize: 14, countBadgeFontSize: 12, countBadgeLineHeight: 16, countBadgeMargin: 6, countBadgePadding: 1 },
   },
+  // "zendesk" and "clear" both wipe density. "zendesk" additionally turns
+  // off compact mode in General, returning to a fully native sidebar.
   "zendesk": { level: {}, global: {} },
   "clear":   { level: {}, global: {} },
 };
@@ -321,6 +328,37 @@ async function clearPreviewEverywhere() {
     const tabs = await chrome.tabs.query({ url: ZENDESK_URL_MATCH });
     for (const t of tabs) await safeSend(t.id, { type: "zvt:clearPreview" });
   } catch {}
+}
+
+/* ===================== auto-enable wrappers ========================== *
+ * Density rules are gated on `body.zvt-compact`; theme rules on
+ * `body.zvt-themed`. If the user touches a density slider or theme color
+ * while the relevant master toggle is off, their change persists silently
+ * but doesn't apply visually — confusing.
+ *
+ * These wrappers are the single chokepoint for density/theme writes.
+ * They flip the master toggle on if needed so the user's intent is
+ * always reflected immediately. The General section's checkbox visibly
+ * flips, signaling what happened.
+ */
+
+async function ensurePref(key, value) {
+  if (!store) return;
+  if (store.resolve("prefs")[key] !== value) {
+    await store.update("prefs", { [key]: value });
+  }
+}
+
+async function commitDensity(patch, opts = {}) {
+  if (opts.replace) await store.replace("density", patch);
+  else await store.update("density", patch);
+  await ensurePref("compact", true);
+}
+
+async function commitTheme(patch, opts = {}) {
+  if (opts.replace) await store.replace("theme", patch);
+  else await store.update("theme", patch);
+  await ensurePref("themed", true);
 }
 
 /* ============================ row factory ============================ */
@@ -548,9 +586,9 @@ function renderDensity() {
         kind: "number", label: tk.label, min: tk.min, max: tk.max, step: tk.step, value,
         defaultRef, disabled,
         onPreview: (v) => queuePreview({ density: { level: { [String(depth)]: { [tk.key]: v } } } }),
-        onCommit: (v) => store.update("density", { level: { [String(depth)]: { [tk.key]: v } } }),
+        onCommit: (v) => commitDensity({ level: { [String(depth)]: { [tk.key]: v } } }),
         onClear: async () => {
-          await store.update("density", { level: { [String(depth)]: { [tk.key]: null } } });
+          await commitDensity({ level: { [String(depth)]: { [tk.key]: null } } });
           queuePreview({ density: { level: { [String(depth)]: { [tk.key]: null } } } });
         },
       }));
@@ -565,9 +603,9 @@ function renderDensity() {
       kind: "number", label: tk.label, min: tk.min, max: tk.max, step: tk.step, value,
       defaultRef,
       onPreview: (v) => queuePreview({ density: { global: { [tk.key]: v } } }),
-      onCommit: (v) => store.update("density", { global: { [tk.key]: v } }),
+      onCommit: (v) => commitDensity({ global: { [tk.key]: v } }),
       onClear: async () => {
-        await store.update("density", { global: { [tk.key]: null } });
+        await commitDensity({ global: { [tk.key]: null } });
         queuePreview({ density: { global: { [tk.key]: null } } });
       },
     }));
@@ -587,14 +625,22 @@ function bindDensity() {
   document.querySelectorAll('.presets button[data-preset]').forEach((btn) => {
     btn.addEventListener("click", async () => {
       const name = btn.dataset.preset;
-      if (name === "clear" || name === "zendesk") {
+      if (name === "zendesk") {
+        // True vanilla: clear density AND turn off compact mode.
+        if (!await confirmModal("Restore Zendesk's default look? Clears density customizations and turns off compact mode.")) return;
+        await store.replace("density", { level: {}, global: { ...DEFAULT_DENSITY.global } });
+        await ensurePref("compact", false);
+        return;
+      }
+      if (name === "clear") {
+        // Just clear density; leave compact toggle as-is.
         if (!await confirmModal("Clear all density customizations on this profile?")) return;
         await store.replace("density", { level: {}, global: { ...DEFAULT_DENSITY.global } });
-      } else {
-        const preset = PRESETS[name];
-        if (!preset) return;
-        await store.replace("density", structuredClone(preset));
+        return;
       }
+      const preset = PRESETS[name];
+      if (!preset) return;
+      await commitDensity(structuredClone(preset), { replace: true });
     });
   });
 }
@@ -611,9 +657,9 @@ function renderTheme() {
     els.paletteGrid.appendChild(buildRow({
       kind: "color", section: "theme", label: tk.label, value: palette[tk.key],
       onPreview: (v) => queuePreview({ theme: { palette: { [tk.key]: v } } }),
-      onCommit: (v) => store.update("theme", { palette: { [tk.key]: v } }),
+      onCommit: (v) => commitTheme({ palette: { [tk.key]: v } }),
       onClear: async () => {
-        await store.update("theme", { palette: { [tk.key]: null } });
+        await commitTheme({ palette: { [tk.key]: null } });
         queuePreview({ theme: { palette: { [tk.key]: null } } });
       },
     }));
@@ -634,9 +680,9 @@ function renderTheme() {
       block.appendChild(buildRow({
         kind: "color", section: "theme", label: tk.label, value: tokens[tk.key],
         onPreview: (v) => queuePreview({ theme: { level: { [String(depth)]: { [tk.key]: v } } } }),
-        onCommit: (v) => store.update("theme", { level: { [String(depth)]: { [tk.key]: v } } }),
+        onCommit: (v) => commitTheme({ level: { [String(depth)]: { [tk.key]: v } } }),
         onClear: async () => {
-          await store.update("theme", { level: { [String(depth)]: { [tk.key]: null } } });
+          await commitTheme({ level: { [String(depth)]: { [tk.key]: null } } });
           queuePreview({ theme: { level: { [String(depth)]: { [tk.key]: null } } } });
         },
       }));
@@ -1519,8 +1565,11 @@ async function applyTemplate(tpl, fullOverwrite) {
   for (const section of sectionsToApply) {
     const value = tpl.payload?.[section];
     if (value !== undefined) {
-      // Templates always replace, never merge.
-      await store.replace(section, structuredClone(value));
+      // Templates always replace, never merge. Route density/theme
+      // through their commit wrappers so the master toggle auto-enables.
+      if (section === "density")    await commitDensity(structuredClone(value), { replace: true });
+      else if (section === "theme") await commitTheme(structuredClone(value), { replace: true });
+      else await store.replace(section, structuredClone(value));
     } else if (fullOverwrite) {
       // Clear the section for this profile by writing default values.
       await store.replace(section, SECTION_STRATEGY[section].getDefault());
@@ -1619,9 +1668,10 @@ function bindBackup() {
     try { parsed = JSON.parse(text); } catch { els.backupStatus.textContent = "Invalid JSON."; return; }
     if (!await confirmModal(`Replace this profile's settings with imported data?`)) return;
     for (const section of SECTION_NAMES) {
-      if (parsed[section] !== undefined) {
-        await store.replace(section, parsed[section]);
-      }
+      if (parsed[section] === undefined) continue;
+      if (section === "density")    await commitDensity(parsed[section], { replace: true });
+      else if (section === "theme") await commitTheme(parsed[section], { replace: true });
+      else                          await store.replace(section, parsed[section]);
     }
     els.backupStatus.textContent = "Imported.";
   });
