@@ -5,7 +5,10 @@
   --accent: #2463eb; --warn: #d29922; --danger: #cf222e;
   --row-hover: rgba(36, 99, 235, 0.06);
   --ok: #2da44e;
-  --topbar-h: 56px;
+  /* Approximate topbar height — used as scroll/sticky anchor. The topbar
+   * itself is dynamic (wraps the open-tabs row) but this value is generous
+   * enough that sticky elements clear it cleanly. */
+  --topbar-h: 110px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -28,16 +31,96 @@ body {
 /* ============================== topbar ============================== */
 .topbar {
   position: sticky; top: 0; z-index: 50;
-  height: var(--topbar-h); background: var(--card-bg);
+  background: var(--card-bg);
   border-bottom: 1px solid var(--border);
 }
 .topbar-inner {
-  height: 100%; max-width: 1200px; margin: 0 auto;
-  padding: 0 24px;
+  max-width: 1200px; margin: 0 auto;
+  padding: 12px 24px;
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  flex-wrap: wrap;
 }
 .topbar-inner h1 { margin: 0; font-size: 16px; }
 .topbar-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+.open-tabs-bar {
+  max-width: 1200px; margin: 0 auto;
+  padding: 6px 24px 10px;
+  display: flex; align-items: center; gap: 10px;
+  border-top: 1px dashed var(--border);
+}
+.open-tabs-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.open-tabs-row {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0;
+}
+.open-tab-empty {
+  font-size: 11px; color: var(--muted); font-style: italic;
+}
+.open-tab-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px;
+  background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); font-size: 11px; cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  transition: border-color 0.1s, background 0.1s;
+}
+.open-tab-pill:hover { border-color: var(--accent); }
+.open-tab-pill.active-tab {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.open-tab-pill.editing {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.open-tab-pill .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--ok);
+  display: inline-block;
+}
+.open-tab-pill .tag {
+  font-size: 9px; padding: 1px 5px; border-radius: 999px;
+  background: var(--bg); color: var(--muted); border: 1px solid var(--border);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.open-tab-pill.host-only { opacity: 0.85; }
+
+/* Toast overlay (top-center). Single instance; CSS handles in/out animation. */
+.toast-root {
+  position: fixed; top: 14px; left: 50%; transform: translate(-50%, -120%);
+  padding: 8px 16px; border-radius: 6px;
+  background: var(--card-bg); color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 13px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  opacity: 0; pointer-events: none;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+  z-index: 200;
+}
+.toast-root.show {
+  transform: translate(-50%, 0);
+  opacity: 1;
+}
+
+/* Catalog source banner — appears when editing Shared defaults */
+.catalog-banner {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 8px 12px; margin-bottom: 8px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 6px;
+  font-size: 12px; color: var(--text);
+}
+.catalog-banner.empty-source {
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+}
+.catalog-banner-text { color: var(--muted); }
+.catalog-banner-note { color: var(--muted); font-size: 11px; }
+.catalog-source-select {
+  padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--text); font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 
 .profile-switcher {
   display: flex; align-items: center; gap: 6px;

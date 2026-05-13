@@ -22,7 +22,13 @@
           <button type="button" id="reset-everything" class="link-btn danger-link" title="Reset every setting on every profile">Reset all ↻</button>
         </div>
       </div>
+      <div class="open-tabs-bar">
+        <span class="open-tabs-label">Open Zendesk tabs:</span>
+        <div id="open-tabs-row" class="open-tabs-row" aria-label="Open Zendesk tab pills"></div>
+      </div>
     </header>
+
+    <div id="toast-root" class="toast-root" role="status" aria-live="polite"></div>
 
     <div class="layout">
       <nav class="sidenav" id="sidenav" aria-label="Section navigation">
@@ -98,6 +104,7 @@
         <section class="card" id="sec-hide">
           <h2>Hide views &amp; groups</h2>
           <div class="card-body">
+            <div id="hide-catalog-banner" class="catalog-banner" hidden></div>
             <p class="sub">Uncheck a leaf to hide just that view. Uncheck a group to hide its entire subtree.</p>
             <div class="toolbar">
               <input type="search" id="hide-search" placeholder="Search views or groups…" autocomplete="off" />
@@ -110,7 +117,7 @@
             <div id="hide-status" class="status" role="status" aria-live="polite"></div>
             <div id="tree" class="tree" hidden></div>
             <div id="empty" class="empty" hidden>
-              <p>No views discovered for this profile yet. Open your Zendesk Views page (<code>your-subdomain.zendesk.com/agent</code>) on this tenant.</p>
+              <p id="empty-text">No views discovered for this profile yet. Open your Zendesk Views page (<code>your-subdomain.zendesk.com/agent</code>) on this tenant.</p>
             </div>
             <details class="manual-add">
               <summary>Add a view manually</summary>
@@ -130,6 +137,7 @@
         <section class="card" id="sec-customize">
           <h2>Customize views</h2>
           <div class="card-body">
+            <div id="customize-catalog-banner" class="catalog-banner" hidden></div>
             <p class="sub">
               Per-view styling: background color, text color, font weight, italic, padding, and an optional title prefix (emoji or short text).
               Custom labels are coming in a future release.
@@ -148,6 +156,7 @@
         <section class="card" id="sec-reorder">
           <h2>Reorder</h2>
           <div class="card-body">
+            <div id="reorder-catalog-banner" class="catalog-banner" hidden></div>
             <p class="sub">
               Drag items to reorder them within their group, or use the up/down arrows.
               Items keep Zendesk's intrinsic order until you move them.
