@@ -642,9 +642,17 @@
     // The user creates an explicit profile only via the popup or options.
     recordKnownHost(host).catch(() => {});
     // Announce ourselves so any open options page / popup can refresh
-    // immediately without waiting for the next 5s status poll.
+    // immediately without waiting for the next status poll.
+    //
+    // sendMessage returns a Promise that REJECTS in Firefox (and sets
+    // runtime.lastError in Chrome) when there's no listener — which is
+    // common here because the options page may not be open. The previous
+    // try/catch caught synchronous throws but missed the async rejection,
+    // producing an "unhandled promise rejection" warning in Firefox.
+    // Both browsers accept the no-op .catch() form.
     try {
-      chrome.runtime.sendMessage({ type: "zvt:tabMounted", host });
+      const r = chrome.runtime.sendMessage({ type: "zvt:tabMounted", host });
+      if (r && typeof r.catch === "function") r.catch(() => {});
     } catch {
       /* extension context may be reloading */
     }

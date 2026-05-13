@@ -1,6 +1,6 @@
 # Zendesk Sidebar Customizer
 
-A Chrome extension (Manifest V3) for total control over the **Views sidebar** in Zendesk Support.
+A browser extension (Manifest V3) for total control over the **Views sidebar** in Zendesk Support. Works in **Chromium browsers** (Chrome, Edge, Brave, Arc, Vivaldi) and **Firefox**.
 
 - 🪪 **Per-tenant profiles** — different settings per Zendesk subdomain. New tenants inherit from a `default` profile until you fork.
 - 🎚️ **Per-level density** — independently set font size, padding, indent, etc. for each nesting level. Live preview via sliders.
@@ -12,11 +12,11 @@ A Chrome extension (Manifest V3) for total control over the **Views sidebar** in
 - 🛡️ **Resilient** — primary `data-test-id` selectors with shape-detection fallback. Health pill in the popup warns if Zendesk's DOM changes.
 - 💾 **Portable** — export each profile to JSON, import on another machine.
 
-Works on any Zendesk Support tenant (`*.zendesk.com`).
+Works on any Zendesk Support tenant (`*.zendesk.com`). Settings sync across devices via the browser's built-in extension storage sync.
 
 ## Install
 
-This extension is not on the Chrome Web Store yet. Install it as an **unpacked extension** in any Chromium browser (Chrome, Edge, Brave, Arc, Vivaldi, etc.).
+This extension isn't on the Chrome Web Store or Mozilla AMO yet — install it from the source.
 
 ### Step 1 — Get the code
 
@@ -24,7 +24,7 @@ Pick whichever you prefer:
 
 **Option A: download as ZIP** (no git required)
 1. Click **Code** → **Download ZIP** at the top of this repo.
-2. Unzip somewhere permanent (e.g. `~/extensions/zendesk-sidebar-customizer`). The unpacked folder needs to stay where it is — Chrome reads the files from there every time the browser starts.
+2. Unzip somewhere permanent (e.g. `~/extensions/zendesk-sidebar-customizer`). The unpacked folder needs to stay where it is — your browser reads the files from there every time it starts.
 
 **Option B: clone with git**
 ```sh
@@ -33,11 +33,23 @@ git clone https://github.com/dbuskariol/zendesk-sidebar-customizer.git ~/extensi
 
 ### Step 2 — Load it into your browser
 
+#### Chrome / Edge / Brave / Arc / Vivaldi (Chromium)
 1. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`, etc.).
 2. Toggle **Developer mode** on (top-right corner).
 3. Click **Load unpacked**.
 4. Select the **folder you unzipped or cloned** (it should contain `manifest.json` at the top level).
-5. The extension appears in your list. Click the puzzle-piece icon in the toolbar and pin **Zendesk Sidebar Customizer** for easy access to the popup.
+5. Click the puzzle-piece icon in the toolbar and pin **Zendesk Sidebar Customizer**.
+
+The extension persists across browser restarts.
+
+#### Firefox (≥128)
+1. Open `about:debugging`.
+2. Click **This Firefox** in the left sidebar.
+3. Click **Load Temporary Add-on…**.
+4. Pick the `manifest.json` inside the folder you unzipped or cloned.
+5. Pin the extension via the toolbar overflow menu if you want quick access.
+
+> **Note:** Firefox unloads temporary add-ons on browser restart. To keep the extension across restarts, you need a signed `.xpi` from Mozilla AMO. That's not yet published — for now, re-load via `about:debugging` after each restart, or [submit your own signing request](https://extensionworkshop.com/documentation/publish/) if you want a permanent install.
 
 ### Step 3 — Use it
 
@@ -49,11 +61,13 @@ By default the extension does **nothing** to your sidebar until you opt in (Comp
 
 ### Updating
 
-Pull or re-download, then click the **reload** icon next to the extension in `chrome://extensions`. Your settings persist across updates.
+**Chromium**: Pull or re-download, then click the **reload** icon next to the extension in `chrome://extensions`. Your settings persist across updates.
+
+**Firefox** (temporary add-on): re-load via `about:debugging` after replacing the files. Settings stored in `storage.sync` persist across reloads as long as the extension `id` doesn't change (it's pinned in the manifest).
 
 ### Uninstalling
 
-Remove the extension from `chrome://extensions`. Your sync'd settings stay in your Chrome profile in case you reinstall — to fully wipe them, hit **Reset all ↻** in the options page topbar before removing.
+Remove the extension from `chrome://extensions` (Chromium) or `about:addons` (Firefox). Your sync'd settings stay in your browser profile in case you reinstall — to fully wipe them, hit **Reset all ↻** in the options page topbar before removing.
 
 ## Profiles
 
@@ -241,7 +255,7 @@ If Zendesk changes their DOM:
 ## Privacy
 
 - This extension makes **no network requests** of its own.
-- Per-profile settings stay in your browser. Sync sections (`prefs`, `theme`, `density`) sync via Chrome's built-in `chrome.storage.sync`. Per-device sections (`hide`, `order`, `customViews`) never leave the local machine.
+- Per-profile settings stay in your browser. Sync sections (`prefs`, `theme`, `density`) sync via the browser's built-in extension storage sync (Chrome Sync on Chromium, Firefox Sync on Firefox). Per-device sections (`hide`, `order`, `customViews`) never leave the local machine.
 - View IDs and titles in the discovered catalog stay local.
 - Templates you export contain whatever sections you include. If you include `customViews` and use the (future) custom-label feature, that text would be in the export — be aware before sharing.
 
@@ -304,7 +318,9 @@ After loading the extension:
 - v0.3.0 — Group hide + per-level font/indent.
 - v0.4.0 — Spacing token framework, sliders + live preview, reorder feature, schema migration, export/import, selector resilience, health badge, diagnostics.
 - v0.5.0 — Generalized to all Zendesk Support tenants, MIT-licensed.
-- v0.6.0 — Per-tenant profiles, color theming, per-view styling, DOM reorder mode, templates. Clean break from v0.5 storage shape (no migration code by design).
+- v0.6.x — Per-tenant profiles, color theming, per-view styling, DOM reorder mode, templates, real Zendesk intrinsic value calibration.
+- v0.7.0 — Live tab tracking, per-tab pill row, "Shared defaults" catalog source. Cleaned profile model — visited tenants no longer auto-create profiles.
+- v0.8.0 — Firefox support (≥128) via single manifest. No build step.
 
 ## Contributing
 
