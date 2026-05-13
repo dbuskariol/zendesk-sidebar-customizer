@@ -16,6 +16,7 @@
 const {
   ProfileStore, RESERVED_PROFILE_ID, SECTION_NAMES, SECTION_STRATEGY,
   LEVEL_TOKEN_RANGES, GLOBAL_TOKEN_RANGES,
+  INTRINSIC_LEVEL, INTRINSIC_GLOBAL,
   DEFAULT_PREFS, DEFAULT_HIDE, DEFAULT_DENSITY, DEFAULT_ORDER, DEFAULT_THEME,
   RE, viewKey, groupKey, deepMerge,
   loadProfileIndex, ensureProfileExists, deleteProfile,
@@ -338,6 +339,16 @@ function buildRow(cfg) {
   label.id = labelId;
   label.className = "row-label";
   label.textContent = cfg.label;
+  // Show Zendesk's intrinsic value next to the label (when known) so the
+  // user has a frame of reference for what they're overriding. Hidden when
+  // a value is set (the user already knows their override).
+  if (cfg.defaultRef != null && cfg.value == null) {
+    const ref = document.createElement("span");
+    ref.className = "row-default-ref";
+    ref.textContent = `Zendesk: ${cfg.defaultRef}`;
+    ref.title = `Zendesk's default for this property is ${cfg.defaultRef}. Drag the slider to override.`;
+    label.appendChild(ref);
+  }
 
   let primary, secondary;
   if (cfg.kind === "color") {
@@ -357,14 +368,21 @@ function buildRow(cfg) {
     primary.min = String(cfg.min);
     primary.max = String(cfg.max);
     primary.step = String(cfg.step || 1);
-    primary.value = String(cfg.value != null ? cfg.value : (cfg.fallback != null ? cfg.fallback : cfg.min));
+    // When unset, rest the slider thumb on the Zendesk intrinsic value (if
+    // known). User can immediately see "this is what Zendesk uses" and drag
+    // up or down. Falls back to cfg.fallback or cfg.min if no intrinsic.
+    const restValue = cfg.value != null
+      ? cfg.value
+      : (cfg.defaultRef != null ? cfg.defaultRef
+         : (cfg.fallback != null ? cfg.fallback : cfg.min));
+    primary.value = String(restValue);
     primary.setAttribute("aria-labelledby", labelId);
     secondary = document.createElement("input");
     secondary.type = "number";
     secondary.min = String(cfg.min);
     secondary.max = String(cfg.max);
     secondary.step = String(cfg.step || 1);
-    secondary.placeholder = "—";
+    secondary.placeholder = cfg.defaultRef != null ? String(cfg.defaultRef) : "—";
     secondary.value = cfg.value != null ? String(cfg.value) : "";
     secondary.setAttribute("aria-labelledby", labelId);
   }
@@ -374,7 +392,9 @@ function buildRow(cfg) {
   clearBtn.type = "button";
   clearBtn.className = "clear-btn";
   clearBtn.textContent = "×";
-  clearBtn.title = "Clear";
+  clearBtn.title = cfg.defaultRef != null
+    ? `Clear override (use Zendesk default: ${cfg.defaultRef})`
+    : "Clear override";
   clearBtn.disabled = cfg.value == null || cfg.disabled;
 
   const markSet = () => { row.classList.add("set"); clearBtn.disabled = false; };
@@ -446,7 +466,10 @@ function buildRow(cfg) {
       primary.value = "#000000";
     } else {
       secondary.value = "";
-      primary.value = String(cfg.fallback != null ? cfg.fallback : cfg.min);
+      // Reset slider thumb to the Zendesk intrinsic if known.
+      const reset = cfg.defaultRef != null ? cfg.defaultRef
+        : (cfg.fallback != null ? cfg.fallback : cfg.min);
+      primary.value = String(reset);
     }
     markUnset();
     cfg.onClear && cfg.onClear();
@@ -520,9 +543,10 @@ function renderDensity() {
     for (const tk of LEVEL_TOKENS) {
       const disabled = tk.levelMin && depth < tk.levelMin;
       const value = typeof tokens[tk.key] === "number" ? tokens[tk.key] : null;
+      const defaultRef = INTRINSIC_LEVEL[tk.key];
       block.appendChild(buildRow({
         kind: "number", label: tk.label, min: tk.min, max: tk.max, step: tk.step, value,
-        fallback: tk.key === "fontSize" ? 12 : 0, disabled,
+        defaultRef, disabled,
         onPreview: (v) => queuePreview({ density: { level: { [String(depth)]: { [tk.key]: v } } } }),
         onCommit: (v) => store.update("density", { level: { [String(depth)]: { [tk.key]: v } } }),
         onClear: async () => {
@@ -536,8 +560,10 @@ function renderDensity() {
 
   for (const tk of GLOBAL_TOKENS) {
     const value = typeof density.global?.[tk.key] === "number" ? density.global[tk.key] : null;
+    const defaultRef = INTRINSIC_GLOBAL[tk.key];
     els.globalGrid.appendChild(buildRow({
       kind: "number", label: tk.label, min: tk.min, max: tk.max, step: tk.step, value,
+      defaultRef,
       onPreview: (v) => queuePreview({ density: { global: { [tk.key]: v } } }),
       onCommit: (v) => store.update("density", { global: { [tk.key]: v } }),
       onClear: async () => {

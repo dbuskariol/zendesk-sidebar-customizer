@@ -46,9 +46,13 @@
 
   /* ============================== defaults ============================ */
 
+  // Defaults: compact / themed both OFF. The extension is "enabled" (will
+  // discover, respond to messages, persist the catalog) but applies NO
+  // styling to the Zendesk sidebar until the user explicitly opts in.
+  // Reset-all + fresh install = pristine Zendesk look.
   const DEFAULT_PREFS = Object.freeze({
     enabled: true,
-    compact: true,
+    compact: false,
     themed: false,
     reorderEnabled: false,
     reorderMode: "css", // "css" | "dom"
@@ -195,6 +199,32 @@
     countBadgeLineHeight: { min: 8, max: 28 },
     countBadgeMargin:     { min: 0, max: 24 },
     countBadgePadding:    { min: 0, max: 12 },
+  });
+
+  // Zendesk's intrinsic computed values for the views sidebar, observed
+  // from the user's DOM probe (see plan.md). Used as:
+  //   - slider thumb resting position when an override is unset (so the
+  //     user can see "this is where Zendesk has it" and drag down/up)
+  //   - reference text shown in each row's label
+  // These are approximations — Zendesk may tweak them between releases.
+  // Update by re-running the probe in the README's "Calibration" section.
+  const INTRINSIC_LEVEL = Object.freeze({
+    fontSize: 12,
+    lineHeight: 18,
+    rowPaddingTop: 2,
+    rowPaddingBottom: 2,
+    rowPaddingLeft: 12,
+    rowPaddingRight: 20,
+    rowMinHeight: 0,
+    indent: 4,
+  });
+  const INTRINSIC_GLOBAL = Object.freeze({
+    rowGap: 0,
+    iconSize: 14,
+    countBadgeFontSize: 12,
+    countBadgeLineHeight: 18,
+    countBadgeMargin: 0,
+    countBadgePadding: 0,
   });
 
   function validateDensity(v) {
@@ -548,6 +578,7 @@
     SELECTORS, PREFIXES, RE,
     SECTION_STRATEGY, SECTION_NAMES,
     LEVEL_TOKEN_RANGES, GLOBAL_TOKEN_RANGES,
+    INTRINSIC_LEVEL, INTRINSIC_GLOBAL,
     DEFAULT_PREFS, DEFAULT_HIDE, DEFAULT_DENSITY,
     DEFAULT_ORDER, DEFAULT_THEME, DEFAULT_CUSTOM_VIEWS,
     RESERVED_PROFILE_ID,
