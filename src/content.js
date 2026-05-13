@@ -27,8 +27,6 @@
   const PRUNE_AGE_MS = 90 * 24 * 60 * 60 * 1000;
   const PREVIEW_REVERT_MS = 5000;
   const HEALTH_DEBOUNCE_MS = 250;
-  const DOM_REORDER_THROTTLE_MS = 1000;
-  const DOM_REORDER_KILL_THRESHOLD = 20; // re-orders within throttle window before falling back to CSS
 
   let sidebarPane = null;
   let observer = null;
@@ -38,9 +36,9 @@
   let lastPaneViaShape = false;
   let lastHealth = null;
   let previewExpiresTimer = 0;
-  let domReorderOpsInWindow = 0;
-  let domReorderWindowAt = 0;
+  // Tug-of-war detection state.
   let domReorderDisabledForSession = false;
+  let suppressObserverDepth = 0; // guard against self-mutation feedback
 
   const discoveredViews = new Map();
   const discoveredGroups = new Map();
@@ -99,7 +97,7 @@
     document.body?.classList.toggle("zvt-themed", !!prefs.themed);
     rebuildAllSheets();
     // DOM reorder is applied during annotate (not via stylesheet).
-    if (prefs.reorderEnabled && prefs.reorderMode === "dom" && sidebarPane && !domReorderDisabledForSession) {
+    if (prefs.reorderEnabled && effectiveReorderMode() === "dom" && sidebarPane) {
       applyDomReorder(sidebarPane);
     }
   }
@@ -205,7 +203,11 @@
 
   function buildOrderRules() {
     const prefs = profile.resolve("prefs");
-    if (!prefs.reorderEnabled || prefs.reorderMode !== "css") return "";
+    if (!prefs.reorderEnabled) return "";
+    // Emit CSS rules whenever the EFFECTIVE mode is css. That covers the
+    // case where the user picked "dom" but the kill-switch demoted us —
+    // a real fallback instead of zero reorder.
+    if (effectiveReorderMode() !== "css") return "";
     const ord = profile.resolve("order");
     const rules = [
       `ul[data-test-id="${PREFIXES.TREE_OUTER}"],
@@ -219,6 +221,15 @@
       });
     }
     return rules.join("\n");
+  }
+
+  // Effective reorder mode: respects the user's pref but degrades when the
+  // DOM-reorder kill-switch has fired this session. This is the single point
+  // both buildOrderRules and the DOM applier consult.
+  function effectiveReorderMode() {
+    const prefs = profile.resolve("prefs");
+    if (prefs.reorderMode === "dom" && !domReorderDisabledForSession) return "dom";
+    return "css";
   }
 
   function buildThemeRules() {
@@ -365,55 +376,81 @@
 
   /* ============================ DOM reorder =========================== */
 
+  // Tug-of-war detection. A "pass with work" means we had to move at least
+  // one node. Tug-of-war = many passes-with-work close together (Zendesk
+  // re-rendering and undoing our moves). A one-time burst (e.g. user has
+  // 30 pinned items at first paint) is one pass and doesn't count as fight.
+  const PASS_WITH_WORK_THRESHOLD = 5;     // passes-with-work allowed within window
+  const PASS_WITH_WORK_WINDOW_MS = 2000;  // rolling window
+  const passesWithWorkAt = []; // ring of timestamps
+
+  /**
+   * Apply DOM reorder to the sidebar children. Idempotent — if the order is
+   * already correct, returns without mutating. Suppresses observer feedback
+   * during its own writes via a depth-counted guard.
+   */
   function applyDomReorder(pane) {
+    if (domReorderDisabledForSession) return;
     const ord = profile.resolve("order");
     if (!ord || !Object.keys(ord).length) return;
 
-    // Throttle: count operations in a 1s window. If we exceed the kill
-    // threshold, switch off DOM mode for the session and fall back to CSS.
-    const now = Date.now();
-    if (now - domReorderWindowAt > DOM_REORDER_THROTTLE_MS) {
-      domReorderOpsInWindow = 0;
-      domReorderWindowAt = now;
-    }
-    if (domReorderOpsInWindow >= DOM_REORDER_KILL_THRESHOLD) {
-      domReorderDisabledForSession = true;
-      console.warn("[ZVT] DOM reorder churn exceeded threshold; falling back to CSS reorder for this session.");
-      rebuildAllSheets();
-      return;
-    }
-
-    let opsThisCall = 0;
+    // Preflight: walk every container and check whether ANY work is needed.
+    // If everything is already in place, return without entering the
+    // suppression block (saves observer churn & cost).
+    const plan = [];
     for (const [scope, arr] of Object.entries(ord)) {
       if (!Array.isArray(arr) || !arr.length) continue;
       const parent = scope === "ROOT"
         ? pane.querySelector(SELECTORS.outerContainer)
         : pane.querySelector(`ul[data-test-id="${PREFIXES.TREE_CHILD}${cssAttr(scope.slice(2))}"]`);
       if (!parent) continue;
-
       const childByKey = new Map();
       for (const child of parent.children) {
         const k = child.getAttribute?.("data-zvt-key");
         if (k) childByKey.set(k, child);
       }
-
-      // Move each pinned item into its target position. Items not in the
-      // explicit list keep relative DOM order after the pinned block.
+      // Build the moves required to bring this container in line.
+      const moves = [];
       let prevTarget = null;
       for (const key of arr) {
         const node = childByKey.get(key);
         if (!node) continue;
         const desiredAfter = prevTarget;
-        // Insert at start (after null = before first child) or after prevTarget.
         const desiredNext = desiredAfter ? desiredAfter.nextSibling : parent.firstChild;
         if (node !== desiredNext && node !== desiredAfter) {
-          parent.insertBefore(node, desiredNext);
-          opsThisCall++;
+          moves.push({ parent, node, desiredNext });
         }
         prevTarget = node;
       }
+      if (moves.length) plan.push(...moves);
     }
-    domReorderOpsInWindow += opsThisCall;
+    if (!plan.length) return; // nothing to do — pure no-op
+
+    // Self-mutation guard: pause the observer while we apply moves so we
+    // don't trigger a re-discovery cycle from our own writes.
+    suppressObserverDepth++;
+    try {
+      for (const { parent, node, desiredNext } of plan) {
+        parent.insertBefore(node, desiredNext);
+      }
+    } finally {
+      suppressObserverDepth--;
+    }
+
+    // Tug-of-war detection: this was a pass that did real work. If we see
+    // PASS_WITH_WORK_THRESHOLD such passes within the window, we're fighting
+    // Zendesk's React reconciliation; demote to CSS mode for the session.
+    const now = Date.now();
+    passesWithWorkAt.push(now);
+    while (passesWithWorkAt.length && now - passesWithWorkAt[0] > PASS_WITH_WORK_WINDOW_MS) {
+      passesWithWorkAt.shift();
+    }
+    if (passesWithWorkAt.length >= PASS_WITH_WORK_THRESHOLD) {
+      domReorderDisabledForSession = true;
+      console.warn("[ZVT] DOM reorder is fighting Zendesk's re-renders; demoting to CSS reorder for this session.");
+      rebuildAllSheets(); // emit CSS order rules now that effective mode is css
+      snapshotHealth();   // surface the fallback in popup
+    }
   }
 
   /* ============================== discovery =========================== */
@@ -556,7 +593,7 @@
 
     // DOM reorder applied after annotation pass.
     const prefs = profile.resolve("prefs");
-    if (prefs.enabled && prefs.reorderEnabled && prefs.reorderMode === "dom" && !domReorderDisabledForSession) {
+    if (prefs.enabled && prefs.reorderEnabled && effectiveReorderMode() === "dom") {
       applyDomReorder(pane);
     }
   }
@@ -608,7 +645,10 @@
   function snapshotHealth() {
     const pane = sidebarPane;
     const prefs = profile.resolve("prefs");
-    const snap = {
+    // Stable shape used to detect meaningful change. lastDiscoverAt is
+    // intentionally excluded — it changes every snapshot and would cause
+    // unnecessary persistence + downstream re-render churn in the options page.
+    const stableSnap = {
       profileId: PROFILE_ID,
       paneFound: !!pane,
       paneSelector: pane ? lastPaneSelector : null,
@@ -623,14 +663,15 @@
       compact: !!prefs.compact,
       themed: !!prefs.themed,
       enabled: !!prefs.enabled,
-      lastDiscoverAt: Date.now(),
     };
-    if (!lastHealth || JSON.stringify(lastHealth) !== JSON.stringify(snap)) {
+    const snap = { ...stableSnap, lastDiscoverAt: Date.now() };
+    if (!lastHealth || JSON.stringify(omitTimestamp(lastHealth)) !== JSON.stringify(stableSnap)) {
       lastHealth = snap;
       chrome.storage.local.set({ [`selectorHealth:${PROFILE_ID}`]: snap });
     }
     return snap;
   }
+  function omitTimestamp(h) { const { lastDiscoverAt, ...rest } = h; return rest; }
   function scheduleHealthSnapshot() {
     if (healthDebounce) return;
     healthDebounce = setTimeout(() => {
@@ -644,7 +685,12 @@
   function attachObserver() {
     if (observer) { observer.disconnect(); observer = null; }
     if (!sidebarPane) return;
-    observer = new MutationObserver(() => scheduleDiscover());
+    observer = new MutationObserver(() => {
+      // Self-mutation guard: if we triggered this by inserting nodes
+      // ourselves during applyDomReorder, ignore the resulting fire.
+      if (suppressObserverDepth > 0) return;
+      scheduleDiscover();
+    });
     observer.observe(sidebarPane, { childList: true, subtree: true });
   }
 

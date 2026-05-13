@@ -157,13 +157,64 @@ let expandedCustomViewId = null;
 let previewTimer = 0;
 let pendingPreviewPatch = null;
 
+// Local-write suppression: when the options page commits a section, the
+// resulting storage.onChanged event echoes back to us. Re-rendering the
+// section the user JUST touched would destroy any active control (most
+// visibly: the native color picker popup closes mid-selection).
+//
+// We mark each section with a "recently written locally" timestamp; if a
+// storage echo arrives within LOCAL_WRITE_SUPPRESS_MS, we skip re-rendering
+// THAT section. Other sections still re-render normally.
+const LOCAL_WRITE_SUPPRESS_MS = 800;
+const localWriteAt = new Map(); // section -> timestamp ms
+
+function markLocalWrite(section) {
+  localWriteAt.set(section, Date.now());
+}
+
+function recentlyWroteLocally(section) {
+  const t = localWriteAt.get(section);
+  return t != null && (Date.now() - t) < LOCAL_WRITE_SUPPRESS_MS;
+}
+
+/**
+ * Wrap a fresh ProfileStore so every write marks the affected section as
+ * "recently written locally", suppressing the storage-echo re-render.
+ * Single chokepoint for all writes; keeps the suppression logic DRY.
+ */
+function attachLocalWriteTracking(s) {
+  const origUpdate = s.update.bind(s);
+  const origReplace = s.replace.bind(s);
+  const origFork = s.fork.bind(s);
+  const origUnfork = s.unfork.bind(s);
+  s.update = (section, value) => {
+    markLocalWrite(section);
+    return origUpdate(section, value);
+  };
+  s.replace = (section, value) => {
+    markLocalWrite(section);
+    return origReplace(section, value);
+  };
+  s.fork = (section) => {
+    markLocalWrite(section);
+    return origFork(section);
+  };
+  s.unfork = (section) => {
+    markLocalWrite(section);
+    return origUnfork(section);
+  };
+  return s;
+}
+
+
+
 /* =============================== helpers ============================= */
 
 const $ = (id) => document.getElementById(id);
 const els = {};
 function bindEls() {
   for (const id of [
-    "profile-select","profile-new","profile-delete","status-pill","open-zendesk",
+    "profile-select","profile-new","profile-delete","status-pill","open-zendesk","reset-everything",
     "enabled","compact","themed","reorderEnabled","reorder-mode-set",
     "general-profile-id","general-fork-state",
     "level-grid","global-grid","palette-grid","theme-level-grid",
@@ -1703,7 +1754,7 @@ function bindProfileSwitcher() {
 
 async function switchEditingProfile(id) {
   await setEditingProfileId(id);
-  store = new ProfileStore(id);
+  store = attachLocalWriteTracking(new ProfileStore(id));
   await store.load();
   await loadDiscoveryForProfile(id);
   renderAll();
@@ -1837,29 +1888,112 @@ function bindAll() {
     }
   });
 
+  // Reset everything: nuke both storage areas this extension owns and reseed
+  // a clean default profile. Per consensus: full clear is simpler and safer
+  // than maintaining a hand-curated key prefix list.
+  els.resetEverything.addEventListener("click", async () => {
+    const ok = await confirmModal(
+      "Reset EVERYTHING? This wipes every profile, every saved template, " +
+      "all hidden lists, custom orders, custom-view styling, theme overrides, " +
+      "and density settings on this device. Sync sections will also clear " +
+      "across your other devices on next sync. Cannot be undone."
+    );
+    if (!ok) return;
+    await Promise.all([
+      new Promise((r) => chrome.storage.sync.clear(r)),
+      new Promise((r) => chrome.storage.local.clear(r)),
+    ]);
+    // Reseed a minimal index + default editing target.
+    await new Promise((r) => chrome.storage.sync.set({
+      profileIndex: { profiles: [RESERVED_PROFILE_ID] },
+    }, r));
+    await new Promise((r) => chrome.storage.local.set({
+      editingProfileId: RESERVED_PROFILE_ID,
+    }, r));
+    // Tell content scripts to drop any preview state they're holding.
+    clearPreviewEverywhere();
+    // Restart with the fresh default profile.
+    allProfiles = [RESERVED_PROFILE_ID];
+    editingProfileId = RESERVED_PROFILE_ID;
+    store = attachLocalWriteTracking(new ProfileStore(RESERVED_PROFILE_ID));
+    await store.load();
+    views = []; groups = []; containers = [];
+    healthByProfile = {}; userTemplates = [];
+    expandedHidePaths.clear(); expandedCustomViewId = null;
+    localWriteAt.clear();
+    renderAll();
+  });
+
+  // Granular re-renderers per section. Avoids blanket renderAll() which
+  // destroys interactive controls (color pickers especially) when the user
+  // is mid-interaction. Bug 1: native color picker dropdown closes if its
+  // backing <input> gets recreated.
+  const SECTION_RENDERERS = {
+    prefs:       renderGeneral,
+    density:     renderDensity,
+    theme:       renderTheme,
+    hide:        renderHide,
+    order:       renderReorder,
+    customViews: renderCustomize,
+  };
+
   chrome.storage.onChanged.addListener(async (changes, area) => {
     const sections = await store.handleStorageChange(changes, area);
-    let needsDiscovery = false;
-    if (area === "local") {
-      for (const k of Object.keys(changes)) {
-        if (k.startsWith("discoveredViews:") || k.startsWith("discoveredGroups:") ||
-            k.startsWith("discoveredContainers:") || k.startsWith("selectorHealth:")) {
-          if (k.endsWith(`:${editingProfileId}`)) needsDiscovery = true;
-          if (k.startsWith("selectorHealth:")) {
-            await loadAllHealth();
-          }
-        }
-        if (k === "templates") {
-          userTemplates = changes.templates.newValue || [];
-        }
-      }
+
+    // Sync: section changes are routed to per-section renderers. profileIndex
+    // changes affect the switcher only.
+    for (const section of sections) {
+      // Skip re-rendering a section the user JUST wrote locally — the active
+      // input/control already has the correct value, and a rebuild would
+      // destroy any open native UI (color picker, native dropdowns, etc.).
+      if (recentlyWroteLocally(section)) continue;
+      const renderer = SECTION_RENDERERS[section];
+      if (renderer) renderer();
     }
+    // Density and prefs both feed the diag dump and reorder UI's enabled
+    // state — refresh the small dependent bits without rebuilding controls.
+    if (sections.includes("prefs") && !recentlyWroteLocally("prefs")) renderReorder();
+    if (sections.length) renderDiag();
+
     if (area === "sync" && changes.profileIndex) {
       allProfiles = (changes.profileIndex.newValue?.profiles) || [RESERVED_PROFILE_ID];
+      renderProfileSwitcher();
+      renderDiag();
     }
-    if (needsDiscovery) await loadDiscoveryForProfile(editingProfileId);
-    if (sections.length || needsDiscovery || changes.profileIndex || changes.templates) {
-      renderAll();
+
+    if (area !== "local") return;
+
+    // selectorHealth changes only affect the status pill + popup health.
+    // Do NOT re-render any section — that would destroy active controls.
+    let healthChanged = false;
+    let discoveryChanged = false;
+    let templatesChanged = false;
+    for (const k of Object.keys(changes)) {
+      if (k.startsWith("selectorHealth:")) healthChanged = true;
+      if (k === "templates") templatesChanged = true;
+      if (
+        (k.startsWith("discoveredViews:") ||
+         k.startsWith("discoveredGroups:") ||
+         k.startsWith("discoveredContainers:")) &&
+        k.endsWith(`:${editingProfileId}`)
+      ) discoveryChanged = true;
+    }
+    if (healthChanged) {
+      await loadAllHealth();
+      refreshStatus();
+      renderDiag();
+    }
+    if (discoveryChanged) {
+      await loadDiscoveryForProfile(editingProfileId);
+      // Discovery affects sections that show discovered items.
+      renderHide();
+      renderCustomize();
+      renderReorder();
+      renderDiag();
+    }
+    if (templatesChanged) {
+      userTemplates = changes.templates.newValue || [];
+      renderTemplates();
     }
   });
 
@@ -1872,7 +2006,7 @@ function bindAll() {
   bindEls();
   allProfiles = (await loadProfileIndex()).profiles;
   editingProfileId = await loadEditingProfileId();
-  store = new ProfileStore(editingProfileId);
+  store = attachLocalWriteTracking(new ProfileStore(editingProfileId));
   await store.load();
   await Promise.all([
     loadDiscoveryForProfile(editingProfileId),

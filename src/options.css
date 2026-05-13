@@ -73,6 +73,8 @@ body {
   cursor: pointer; font-size: 12px; font-weight: 500;
 }
 .link-btn:hover { border-color: var(--border); }
+.link-btn.danger-link { color: var(--danger); }
+.link-btn.danger-link:hover { border-color: color-mix(in srgb, var(--danger) 50%, transparent); }
 
 /* =============================== layout ============================= */
 .layout {
