@@ -1,5 +1,5 @@
 /*
- * Zendesk Views Tweaks — lib.js  (v0.6.0)
+ * Zendesk Sidebar Customizer — lib.js  (v0.6.4)
  *
  * Shared library loaded by content scripts, options page, and popup.
  * Exposes a single `window.ZVT` namespace.

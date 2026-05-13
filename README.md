@@ -1,4 +1,4 @@
-# Zendesk Views Tweaks
+# Zendesk Sidebar Customizer
 
 A Chrome extension (Manifest V3) for total control over the **Views sidebar** in Zendesk Support.
 
@@ -14,17 +14,46 @@ A Chrome extension (Manifest V3) for total control over the **Views sidebar** in
 
 Works on any Zendesk Support tenant (`*.zendesk.com`).
 
-## Install (load unpacked)
+## Install
 
-This extension is not on the Chrome Web Store. To install:
+This extension is not on the Chrome Web Store yet. Install it as an **unpacked extension** in any Chromium browser (Chrome, Edge, Brave, Arc, Vivaldi, etc.).
 
-1. Clone or download this repository.
-2. Open `chrome://extensions` (or any Chromium browser: Edge, Brave, Arc, etc.).
-3. Toggle **Developer mode** on.
-4. Click **Load unpacked** and pick the repository folder.
-5. Pin the extension if you want quick access to the popup.
+### Step 1 — Get the code
 
-The extension activates on any `https://*.zendesk.com/*` page that has a Views sidebar.
+Pick whichever you prefer:
+
+**Option A: download as ZIP** (no git required)
+1. Click **Code** → **Download ZIP** at the top of this repo.
+2. Unzip somewhere permanent (e.g. `~/extensions/zendesk-sidebar-customizer`). The unpacked folder needs to stay where it is — Chrome reads the files from there every time the browser starts.
+
+**Option B: clone with git**
+```sh
+git clone https://github.com/dbuskariol/zendesk-sidebar-customizer.git ~/extensions/zendesk-sidebar-customizer
+```
+
+### Step 2 — Load it into your browser
+
+1. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`, etc.).
+2. Toggle **Developer mode** on (top-right corner).
+3. Click **Load unpacked**.
+4. Select the **folder you unzipped or cloned** (it should contain `manifest.json` at the top level).
+5. The extension appears in your list. Click the puzzle-piece icon in the toolbar and pin **Zendesk Sidebar Customizer** for easy access to the popup.
+
+### Step 3 — Use it
+
+1. Visit your Zendesk Support views page: `https://your-subdomain.zendesk.com/agent`.
+2. Click the extension icon in the toolbar to open the popup. You'll see your tenant's profile, master toggles, and a health indicator.
+3. Click **Open options…** for the full settings page. Drag sliders, pick colors, hide views, reorder things — changes preview live in your Zendesk tab.
+
+By default the extension does **nothing** to your sidebar until you opt in (Compact mode and Theme overrides are off). It's discovering your views in the background so they're listed when you open the options page.
+
+### Updating
+
+Pull or re-download, then click the **reload** icon next to the extension in `chrome://extensions`. Your settings persist across updates.
+
+### Uninstalling
+
+Remove the extension from `chrome://extensions`. Your sync'd settings stay in your Chrome profile in case you reinstall — to fully wipe them, hit **Reset all ↻** in the options page topbar before removing.
 
 ## Profiles
 
