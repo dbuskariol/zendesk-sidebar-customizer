@@ -749,6 +749,9 @@
       annotate(sidebarPane);
       snapshotHealth();
     }
+    // v0.9.0 — also rescan for ticket tables on each tick. Cheap; only
+    // mutates internal state when a new table appears or an old one is gone.
+    try { window.ZVT_TICKETS?.scan(); } catch (e) {}
   }, 3000);
 
   /* ============================ live preview ========================= */
@@ -786,12 +789,16 @@
         sidebarPane = findSidebarPane();
         attachObserver();
         discoverNow();
+        // v0.9.0 — rescan ticket tables too. Same dispatch, scoped to the
+        // tickets module's own state.
+        try { window.ZVT_TICKETS?.scan(); } catch (e) {}
         sendResponse({
           ok: true, profileId: PROFILE_ID,
           paneFound: !!sidebarPane,
           viewCount: discoveredViews.size,
           groupCount: discoveredGroups.size,
           containerCount: discoveredContainers.size,
+          ticketsManaged: window.ZVT_TICKETS?.snapshot?.()?.managedCount || 0,
         });
         return false;
       case "zvt:preview": {
@@ -831,6 +838,11 @@
     const changedSections = await profile.handleStorageChange(changes, area);
     if (changedSections.length) {
       applyEnabledState();
+      // If any ticket-list section changed, push fresh settings to the
+      // tickets module. Cheap no-op if no ticket section changed.
+      if (window.ZVT_TICKETS && changedSections.some(s => s.startsWith("ticket"))) {
+        try { window.ZVT_TICKETS.refreshSettings(); } catch (e) {}
+      }
     }
   });
 
@@ -843,6 +855,15 @@
     await profile.load();
     applyEnabledState();
     tryMountSidebar(15);
+    // v0.9.0 — hand the profile to the ticket-list module so it can apply
+    // ticket-list density/hide/color/auto-refresh in parallel with the
+    // sidebar customizer. Tickets module is fully independent — failing
+    // to attach must not break sidebar functionality.
+    try {
+      window.ZVT_TICKETS?.attach({ profile, host: PROFILE_ID });
+    } catch (e) {
+      console.warn("[zvt] ticket-list attach failed:", e);
+    }
   })();
 
   /* ========================== debug surface ========================= */
@@ -862,6 +883,8 @@
       get theme()       { return profile.resolve("theme"); },
       get customViews() { return profile.resolve("customViews"); },
       get health()      { return snapshotHealth(); },
+      get tickets()     { return window.ZVT_TICKETS?.snapshot?.() || null; },
+      get ticketObservations() { return window.ZVT_TICKETS?.observations || null; },
       selectors: SELECTORS, prefixes: PREFIXES,
       rescan() {
         sidebarPane = findSidebarPane();
