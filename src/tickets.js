@@ -286,7 +286,10 @@
     const anchor = row.querySelector(TICKET_SELECTORS.ticketAnchor);
     const href = anchor?.getAttribute("href");
     if (href) {
-      const m = href.match(/\/agent\/tickets\/(\d+)/);
+      // Match both relative (tickets/123) and absolute
+      // (/agent/tickets/123 or full URL) forms — tenants render
+      // either depending on Zendesk version + framework.
+      const m = href.match(/(?:^|\/)tickets\/(\d+)/);
       if (m) return m[1];
     }
     const idCell = row.querySelector(TICKET_SELECTORS.idCell);
@@ -615,6 +618,12 @@
 }
 nav:has(> [data-test-id^="generic-table-pagination"]),
 nav:has(> [data-garden-id^="cursor_pagination"]) {
+  display: none !important;
+}
+/* Zendesk's loading skeleton rows have data-garden-id="tables.row"
+   but NO data-test-id (real rows have data-test-id="generic-table-row").
+   Hide them so we don't see the flash during pagination. */
+tbody[data-garden-id="tables.body"] > tr[data-garden-id="tables.row"]:not([data-test-id]) {
   display: none !important;
 }
     `.trim();
@@ -1122,14 +1131,15 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
 
     triggerFromTarget(target) {
       if (!target?.closest) return null;
-      // Direct hover on a ticket subject link.
+      // Primary trigger: the subject cell. This is the cell containing
+      // the ticket subject text + link. Identified by Zendesk's stable
+      // data-test-id (the same across tenants and view layouts).
+      const subjectCell = target.closest(TICKET_SELECTORS.subjectCell);
+      if (subjectCell) return subjectCell;
+      // Secondary trigger: a direct ticket anchor (handles tenants
+      // whose subject column wraps the link in an unusual container).
       const link = target.closest(TICKET_SELECTORS.ticketAnchor);
       if (link) return link;
-      // Hover on a table cell that contains a ticket subject link — the
-      // user is over the subject column but not precisely on the link
-      // text (whitespace, padding, wrapping div).
-      const cell = target.closest("td, th, [role='cell'], [role='gridcell']");
-      if (cell && cell.querySelector(TICKET_SELECTORS.ticketAnchor)) return cell;
       return null;
     }
 
@@ -1192,7 +1202,9 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       const anchor = row.querySelector(TICKET_SELECTORS.ticketAnchor);
       const href = anchor?.getAttribute("href");
       if (href) {
-        const m = href.match(/\/agent\/tickets\/(\d+)/);
+        // Match both relative (tickets/123) and absolute
+        // (/agent/tickets/123 or full URL) forms.
+        const m = href.match(/(?:^|\/)tickets\/(\d+)/);
         if (m) return m[1];
       }
       const idCell = row.querySelector(TICKET_SELECTORS.idCell);
@@ -1936,6 +1948,11 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
           console.log("[zvt-tickets] post-merge DOM check", {
             ok, mergedTotal: total, renderedDataRows: rendered, tbodyAllRows: tbodyAll,
           });
+          // React has committed the merged rows. Tear down our
+          // visual overlay (cloned rows from before the wipe) and
+          // restore the user's scroll position. This happens AFTER
+          // React finishes so we don't see a jump from clone to real.
+          this.endPagination();
         }, 300);
         if (this.loadingEl) {
           this.loadingEl.textContent = `${total} tickets loaded - scroll for more`;
@@ -1962,6 +1979,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     }
     detach() {
       if (!this.attached) return;
+      this.endPagination();
       this.scrollContainer?.removeEventListener("scroll", this.boundScroll);
       this.scrollContainer = null;
       this.attached = false;
@@ -2004,7 +2022,113 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       }
       this.lastClickAt = Date.now();
       this.showLoading();
+      this.beginPagination();
       nextBtn.click();
+    }
+
+    /**
+     * Snapshot current visual state before clicking Next, so the
+     * pagination "feels" like additive loading instead of a full table
+     * reset. Three things happen between clicking Next and React
+     * committing the merged response:
+     *   1. React wipes the tbody.
+     *   2. Zendesk inserts loading skeleton rows briefly.
+     *   3. React commits the merged-response rows.
+     *
+     * That cycle flashes the table empty and collapses scrollHeight,
+     * which the browser clamps scrollTop against — perceived as
+     * "scrolled back to the top". We mitigate by:
+     *   - Cloning the existing tbody children into an absolutely-
+     *     positioned overlay inside the scroll container, so the user
+     *     still sees rows during the wipe.
+     *   - Pinning the table's min-height so scrollHeight doesn't
+     *     collapse.
+     *   - Snapshotting scrollTop so we can restore it post-merge.
+     *
+     * endPagination() reverses all of this once React has committed
+     * the merged response (we know from the post-merge DOM check).
+     */
+    beginPagination() {
+      if (this.paginationState) return;
+      const tbody = document.querySelector(TICKET_SELECTORS.tbody);
+      const table = tbody?.closest("table");
+      if (!tbody || !table || !this.scrollContainer) return;
+
+      const scrollTop = this.scrollContainer.scrollTop;
+      const tableRect = table.getBoundingClientRect();
+      const scrollRect = this.scrollContainer.getBoundingClientRect();
+      // Offset relative to scroll container's PADDING box. Because the
+      // overlay is going to be position:absolute inside the scroll
+      // container, its top is measured from the container's top edge
+      // PLUS the container's current scrollTop (since position:absolute
+      // inside a scrolling container is relative to the padding box
+      // origin which scrolls with content).
+      const overlayTop = (tableRect.top - scrollRect.top) + scrollTop;
+      const overlayLeft = (tableRect.left - scrollRect.left) + this.scrollContainer.scrollLeft;
+      const overlayWidth = tableRect.width;
+
+      // Clone the entire <table> so the overlay matches columns + row
+      // heights exactly. We swap the tbody for cloned rows from the
+      // live tbody (header is preserved automatically).
+      const cloneTable = table.cloneNode(true);
+      // The cloned table's tbody is a snapshot — React doesn't know
+      // about it, so it won't be wiped when React mutates the real
+      // tbody.
+
+      const overlay = document.createElement("div");
+      overlay.setAttribute("data-zvt", "pagination-overlay");
+      Object.assign(overlay.style, {
+        position: "absolute",
+        top: `${overlayTop}px`,
+        left: `${overlayLeft}px`,
+        width: `${overlayWidth}px`,
+        pointerEvents: "none",
+        zIndex: "5",
+      });
+      // Ensure the cloned table is full width and doesn't add weird
+      // borders / shadows.
+      cloneTable.style.width = "100%";
+      cloneTable.style.tableLayout = getComputedStyle(table).tableLayout;
+      overlay.appendChild(cloneTable);
+
+      // Scroll container must be positioned for absolute children to
+      // anchor correctly. Add position:relative only if needed.
+      const containerPosition = getComputedStyle(this.scrollContainer).position;
+      const positionWasStatic = (containerPosition === "static");
+      if (positionWasStatic) {
+        this.scrollContainer.style.position = "relative";
+      }
+      this.scrollContainer.appendChild(overlay);
+
+      // Pin table min-height so React's wipe → skeleton doesn't
+      // collapse scrollHeight.
+      const previousMinHeight = table.style.minHeight;
+      table.style.minHeight = `${tableRect.height}px`;
+
+      this.paginationState = {
+        scrollTop,
+        table,
+        previousMinHeight,
+        overlay,
+        positionWasStatic,
+      };
+    }
+
+    endPagination() {
+      const st = this.paginationState;
+      if (!st) return;
+      this.paginationState = null;
+      // Restore scrollTop FIRST so the user doesn't see a jump when
+      // the overlay disappears and the underlying tbody has different
+      // height during reconciliation.
+      try {
+        if (this.scrollContainer) this.scrollContainer.scrollTop = st.scrollTop;
+      } catch (e) { /* ignore */ }
+      if (st.table) st.table.style.minHeight = st.previousMinHeight || "";
+      if (st.overlay?.parentNode) st.overlay.parentNode.removeChild(st.overlay);
+      if (st.positionWasStatic && this.scrollContainer) {
+        this.scrollContainer.style.position = "";
+      }
     }
     showLoading() {
       if (!this.loadingEl) {

@@ -49,7 +49,7 @@
     idCell:         '[data-test-id="generic-table-cells-id"]',
     dateCell:       '[data-test-id="generic-table-cells-date"]',
     customFieldCell:'[data-test-id^="ticket-table-cells-custom-field-"]',
-    ticketAnchor:   'a[href*="/agent/tickets/"]',
+    ticketAnchor:   'a[href*="tickets/"]',
     refreshBtn:     '[data-test-id="views_views-list_header-refresh"]',
     paginateNext:   '[data-test-id="generic-table-pagination-next"]',
     paginatePrev:   '[data-test-id="generic-table-pagination-previous"]',
