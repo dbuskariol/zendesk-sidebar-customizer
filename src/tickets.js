@@ -1146,6 +1146,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       const popup = this.createPopup(ticketId, theme);
       this.popup = popup;
       this.popupAnchorRow = row;
+      this.popupAnchorRect = positionRect;
       document.body.appendChild(popup);
       this.repositionPopup(popup, positionRect);
 
@@ -1170,13 +1171,20 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     createPopup(ticketId, theme) {
       const popup = document.createElement("div");
       popup.setAttribute("data-zvt-hover-popup", "1");
-      const maxW = settings.ticketHover?.maxWidthPx || 720;
-      const maxH = settings.ticketHover?.maxHeightVh || 80;
+      const D = Z.DEFAULT_TICKET_HOVER;
+      const maxW = settings.ticketHover?.maxWidthPx || D.maxWidthPx;
+      const maxHvh = settings.ticketHover?.maxHeightVh || D.maxHeightVh;
+      // Cap the popup at BOTH the configured maxHeight AND a hard
+      // viewport-relative ceiling so it never overflows the screen.
+      // The 32px margin matches the 16px margin we leave on each side
+      // in repositionPopup so the popup always stays within visible
+      // bounds even on short windows.
+      const safeHeight = `min(${maxHvh}vh, calc(100vh - 32px))`;
       Object.assign(popup.style, {
         position: "fixed",
         width: `${maxW}px`,
         maxWidth: "calc(100vw - 32px)",
-        maxHeight: `${maxH}vh`,
+        maxHeight: safeHeight,
         background: theme.popupBg,
         color: theme.popupFg,
         border: `1px solid ${theme.borderColor}`,
@@ -1230,9 +1238,12 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
 
       const body = document.createElement("div");
       body.setAttribute("data-zvt-popup-body", "1");
+      // The body itself is flex column with minHeight:0 so child panes
+      // can collapse and scroll instead of pushing the popup taller.
       Object.assign(body.style, {
-        padding: "0", overflowY: "auto", flex: "1 1 auto", minHeight: "0",
+        padding: "0", flex: "1 1 auto", minHeight: "0",
         display: "flex", flexDirection: "column",
+        overflow: "hidden",
       });
       body.innerHTML = `<div style="color:${theme.mutedFg};font-style:italic;padding:14px 16px;">Loading ticket #${escapeText(ticketId)}…</div>`;
       popup.appendChild(body);
@@ -1240,34 +1251,40 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       return popup;
     }
 
+    /**
+     * Position the popup relative to the supplied anchor rect, then
+     * clamp into the visible viewport. The popup's CSS max-height
+     * already caps it to `calc(100vh - 32px)` so it can never be
+     * taller than the screen — we just need to make sure its TOP
+     * starts at a position that keeps the bottom in view.
+     */
     repositionPopup(popup, anchorRect) {
-      const margin = 8;
-      const w = popup.offsetWidth || (settings.ticketHover?.maxWidthPx || 720);
+      const margin = 16;
+      const w = popup.offsetWidth || (settings.ticketHover?.maxWidthPx || Z.DEFAULT_TICKET_HOVER.maxWidthPx);
       const h = popup.offsetHeight || 400;
 
-      // Use Zendesk's actual tooltip position as the primary anchor when
-      // it was supplied; only fall back to row-adjacent positioning if
-      // not. anchorRect's coordinates are already in viewport space.
       let left, top;
-
-      // Prefer the same top as the anchor.
       top = anchorRect.top;
-      // Prefer left-aligned with anchor's left edge when anchor is the
-      // Zendesk tooltip (it positioned itself sensibly); for row-rect
-      // fallback, position to the LEFT of the row (Zendesk's default for
-      // ticket queues) with right-flip if no room.
-      const isRowFallback = anchorRect.height < 80;   // rows are ~30-50px tall
+      const isRowFallback = anchorRect.height < 80;
       if (isRowFallback) {
         left = anchorRect.left - w - margin;
-        if (left < margin) left = anchorRect.right + margin;  // flip right
+        if (left < margin) left = anchorRect.right + margin;
       } else {
         left = anchorRect.left;
       }
 
-      // Clamp to viewport.
+      // Clamp to viewport. Use the popup's computed height (which is
+      // already capped at min(maxHeightVh, calc(100vh - 32px))) so we
+      // accurately know where the bottom will land. If the popup's
+      // natural height isn't measurable yet, use the viewport-safe
+      // ceiling as the worst case.
+      const safeMaxH = window.innerHeight - 2 * margin;
+      const effectiveH = Math.min(h || safeMaxH, safeMaxH);
       if (left + w > window.innerWidth - margin) left = window.innerWidth - w - margin;
       if (left < margin) left = margin;
-      if (top + h > window.innerHeight - margin) top = window.innerHeight - h - margin;
+      if (top + effectiveH > window.innerHeight - margin) {
+        top = window.innerHeight - effectiveH - margin;
+      }
       if (top < margin) top = margin;
       popup.style.left = `${left}px`;
       popup.style.top = `${top}px`;
@@ -1284,6 +1301,13 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
         ]);
         if (this.popup !== popup) return;
         this.renderPopupContent(body, ticketRes, commentsRes, theme);
+        // After content renders the popup grows; re-clamp so it never
+        // overflows the bottom of the viewport.
+        requestAnimationFrame(() => {
+          if (this.popup === popup && this.popupAnchorRect) {
+            this.repositionPopup(popup, this.popupAnchorRect);
+          }
+        });
       } catch (e) {
         if (this.popup !== popup) return;
         body.innerHTML = `<div style="color:#d33;font-style:italic;padding:14px 16px;">Couldn't load: ${escapeText(e?.message || String(e))}</div>`;
@@ -1348,8 +1372,11 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       twoPane.style.cssText = "display:flex;flex:1 1 auto;min-height:0;overflow:hidden;";
 
       // ---- Left pane: properties ----
+      // word-wrap properties allow long values (URLs, emails, multi-word
+      // names) to break inside the narrow column instead of forcing the
+      // pane wider.
       const leftPane = document.createElement("div");
-      leftPane.style.cssText = `width:240px;flex-shrink:0;padding:12px 14px;overflow-y:auto;border-right:1px solid ${theme.borderColor};background:${theme.subtleBg};display:flex;flex-direction:column;gap:8px;`;
+      leftPane.style.cssText = `width:260px;flex-shrink:0;padding:12px 14px;overflow-y:auto;overflow-x:hidden;border-right:1px solid ${theme.borderColor};background:${theme.subtleBg};display:flex;flex-direction:column;gap:8px;word-wrap:break-word;overflow-wrap:anywhere;`;
 
       const propRow = (label, value, title) => {
         if (value == null || value === "") return null;
@@ -1409,9 +1436,14 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       twoPane.appendChild(leftPane);
 
       // ---- Right pane: conversation ----
+      // min-width:0 is critical: in a flex row, children default to
+      // min-width:auto which prevents them from shrinking below their
+      // content width. Without this, long unbreakable strings inside
+      // comments (URLs, code) would force the pane wider and break the
+      // 2-pane layout.
       const rightPane = document.createElement("div");
       rightPane.setAttribute("data-zvt-convo-pane", "1");
-      rightPane.style.cssText = "flex:1 1 auto;min-width:0;padding:12px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;";
+      rightPane.style.cssText = "flex:1 1 auto;min-width:0;padding:12px 16px;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:8px;word-wrap:break-word;overflow-wrap:anywhere;";
 
       // Build the comment list. Lovely Views shows newest-first so the
       // most recent reply is what you see immediately. The API uses
@@ -1470,6 +1502,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       if (this.popup?.parentNode) this.popup.parentNode.removeChild(this.popup);
       this.popup = null;
       this.popupAnchorRow = null;
+      this.popupAnchorRect = null;
     }
 
     async fetchTicket(ticketId) {
@@ -1501,7 +1534,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
 
   function renderCommentCard(comment, usersById, theme) {
     const card = document.createElement("div");
-    card.style.cssText = `padding:8px 10px;background:${theme.subtleBg};border-radius:6px;`;
+    card.style.cssText = `padding:8px 10px;background:${theme.subtleBg};border-radius:6px;min-width:0;`;
     const user = usersById.get(comment.author_id);
     const isInternal = comment.public === false;
     const meta = document.createElement("div");
@@ -1522,8 +1555,22 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     }
     card.appendChild(meta);
     const bodyEl = document.createElement("div");
-    bodyEl.style.cssText = `font-size:12px;line-height:1.5;color:${theme.popupFg};word-wrap:break-word;`;
+    // overflow-wrap:anywhere catches long URLs / code / unbreakable
+    // strings; min-width:0 lets the card shrink inside its flex parent.
+    bodyEl.style.cssText = `font-size:12px;line-height:1.5;color:${theme.popupFg};word-wrap:break-word;overflow-wrap:anywhere;min-width:0;`;
     bodyEl.innerHTML = sanitizeHtml(comment.html_body || comment.body || "");
+    // Also make any <pre> inside the comment scroll horizontally rather
+    // than overflow the pane (preserves whitespace + readability).
+    bodyEl.querySelectorAll("pre, code").forEach((el) => {
+      el.style.whiteSpace = el.tagName === "PRE" ? "pre" : el.style.whiteSpace;
+      el.style.overflowX = "auto";
+      el.style.maxWidth = "100%";
+    });
+    // Long images should never blow out the pane width either.
+    bodyEl.querySelectorAll("img").forEach((img) => {
+      img.style.maxWidth = "100%";
+      img.style.height = "auto";
+    });
     card.appendChild(bodyEl);
     return card;
   }
