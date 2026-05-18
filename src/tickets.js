@@ -581,22 +581,51 @@
       this.table = table;
       this.timer = 0;
       this.nextTickAt = 0;
+      // Track the currently-running settings so reconfigure() can skip
+      // restarting the timer when nothing meaningful changed. Without
+      // this, syncAutoRefresh's 3-second cadence would reset the
+      // countdown every 3 seconds (the "never gets below 28s" bug).
+      this.currentIntervalSec = 0;
+      this.currentShowIndicator = false;
       this.indicatorEl = null;
       this.indicatorTimer = 0;
       this.boundVisibility = () => this.onVisibility();
       document.addEventListener("visibilitychange", this.boundVisibility);
     }
     isAlive() { return document.contains(this.table); }
-    start(intervalSec, showIndicator) {
-      this.stop();
-      const ms = intervalSec * 1000;
-      this.nextTickAt = Date.now() + ms;
-      this.timer = setInterval(() => this.tick(), ms);
-      if (showIndicator) this.showIndicator(intervalSec);
+
+    /**
+     * Idempotent configure-or-start. Call this from syncAutoRefresh on
+     * every scan tick; only restarts the timer when the interval actually
+     * changed. This is the fix for the countdown-reset bug.
+     */
+    reconfigure(intervalSec, showIndicator) {
+      const intervalChanged = intervalSec !== this.currentIntervalSec;
+      const showChanged = showIndicator !== this.currentShowIndicator;
+
+      if (intervalChanged || !this.timer) {
+        if (this.timer) clearInterval(this.timer);
+        const ms = intervalSec * 1000;
+        this.nextTickAt = Date.now() + ms;
+        this.timer = setInterval(() => this.tick(), ms);
+        this.currentIntervalSec = intervalSec;
+      }
+      if (showChanged || (showIndicator && !this.indicatorEl)) {
+        if (showIndicator) this.showIndicator();
+        else this.removeIndicator();
+        this.currentShowIndicator = showIndicator;
+      } else if (showIndicator && this.indicatorEl) {
+        // Pill exists but Zendesk may have re-rendered the DOM and
+        // detached it. Re-place if needed (cheap no-op otherwise).
+        if (!document.contains(this.indicatorEl)) this.placeIndicator();
+      }
     }
+
     stop() {
       if (this.timer) { clearInterval(this.timer); this.timer = 0; }
+      this.currentIntervalSec = 0;
       this.removeIndicator();
+      this.currentShowIndicator = false;
     }
     destroy() {
       this.stop();
@@ -606,7 +635,7 @@
       // Visibility transitions don't reset the timer; they only gate tick().
       if (!document.hidden && !this.timer && settings.ticketAutoRefresh?.enabled) {
         const ar = settings.ticketAutoRefresh;
-        this.start(ar.intervalSec, ar.showIndicator);
+        this.reconfigure(ar.intervalSec, ar.showIndicator);
       }
     }
     tick() {
@@ -621,7 +650,6 @@
       // proximity, then degrade.
       const btn = findScopedRefreshButton(this.table);
       if (!btn) {
-        // Selector health: record once-per-page, then disable to avoid spam.
         console.warn("[zvt-tickets] no refresh button found near table; auto-refresh disabled for this page");
         this.stop();
         return;
@@ -635,44 +663,165 @@
         `${TICKET_SELECTORS.dataRow} input[type=checkbox]:checked`
       );
     }
-    showIndicator(intervalSec) {
+
+    showIndicator() {
       if (!this.indicatorEl) {
-        const el = document.createElement("div");
+        const el = document.createElement("span");
         el.setAttribute("data-zvt", "tickets-autorefresh-pill");
+        // Inline pill — styling is location-agnostic so it looks right
+        // whether it ends up in the toolbar (preferred) or fixed-position
+        // fallback in the corner.
         Object.assign(el.style, {
-          position: "fixed", bottom: "12px", right: "12px",
-          padding: "4px 10px", borderRadius: "12px",
-          background: "rgba(21,26,30,0.85)", color: "#fff",
-          font: "12px system-ui, sans-serif", zIndex: "2147483647",
+          display: "inline-flex",
+          alignItems: "center",
+          padding: "2px 8px",
+          marginLeft: "8px",
+          borderRadius: "10px",
+          background: "rgba(21,26,30,0.85)",
+          color: "#fff",
+          font: "11px system-ui, -apple-system, sans-serif",
+          fontWeight: "500",
+          letterSpacing: "0.02em",
+          verticalAlign: "middle",
           pointerEvents: "none",
+          whiteSpace: "nowrap",
         });
-        document.body.appendChild(el);
         this.indicatorEl = el;
       }
+      this.placeIndicator();
+      this.startIndicatorTimer();
+    }
+
+    startIndicatorTimer() {
       const update = () => {
         if (!this.indicatorEl) return;
+        // Re-anchor if Zendesk re-rendered and detached our pill.
+        if (!document.contains(this.indicatorEl)) this.placeIndicator();
         const remaining = Math.max(0, Math.ceil((this.nextTickAt - Date.now()) / 1000));
-        this.indicatorEl.textContent = `Auto-refreshing in ${remaining}s`;
+        this.indicatorEl.textContent = `↻ ${remaining}s`;
       };
       update();
       if (this.indicatorTimer) clearInterval(this.indicatorTimer);
       this.indicatorTimer = setInterval(update, 1000);
     }
+
+    /**
+     * Place the pill in the best available anchor. Priority order:
+     *   1. Inline next to the "<N> tickets (Page X of Y)" count text.
+     *   2. Inline next to the pagination Next/Previous toolbar.
+     *   3. Absolute top-right of the table's positioned ancestor.
+     *   4. Fixed top-right of the viewport (last-resort fallback).
+     */
+    placeIndicator() {
+      if (!this.indicatorEl) return;
+      const anchor = findIndicatorAnchor(this.table);
+      if (!anchor) {
+        this.attachFixedFallback();
+        return;
+      }
+      // Reset styles in case we previously fell back.
+      this.indicatorEl.style.position = "";
+      this.indicatorEl.style.top = "";
+      this.indicatorEl.style.right = "";
+      this.indicatorEl.style.zIndex = "";
+      if (anchor.element !== this.indicatorEl.parentNode) {
+        anchor.element.appendChild(this.indicatorEl);
+      }
+    }
+
+    attachFixedFallback() {
+      if (!this.indicatorEl) return;
+      Object.assign(this.indicatorEl.style, {
+        position: "fixed",
+        top: "60px",
+        right: "16px",
+        zIndex: "2147483647",
+      });
+      if (this.indicatorEl.parentNode !== document.body) {
+        document.body.appendChild(this.indicatorEl);
+      }
+    }
+
     bumpIndicator() {
       if (!this.indicatorEl) return;
-      this.indicatorEl.textContent = "Refreshed";
+      const original = this.indicatorEl.textContent;
+      this.indicatorEl.textContent = "↻ refreshed";
       setTimeout(() => {
-        if (this.indicatorEl) {
-          const remaining = Math.max(0, Math.ceil((this.nextTickAt - Date.now()) / 1000));
-          this.indicatorEl.textContent = `Auto-refreshing in ${remaining}s`;
-        }
+        if (!this.indicatorEl) return;
+        const remaining = Math.max(0, Math.ceil((this.nextTickAt - Date.now()) / 1000));
+        this.indicatorEl.textContent = `↻ ${remaining}s`;
       }, 800);
     }
+
     removeIndicator() {
       if (this.indicatorTimer) { clearInterval(this.indicatorTimer); this.indicatorTimer = 0; }
       if (this.indicatorEl?.parentNode) this.indicatorEl.parentNode.removeChild(this.indicatorEl);
       this.indicatorEl = null;
     }
+  }
+
+  /**
+   * Locate where to inject the auto-refresh pill. We want it adjacent to
+   * whatever ticket-count / pagination chrome Zendesk renders for THIS
+   * table — typically above the table, occasionally below. Walks the
+   * table's ancestors looking for matching candidates, then falls back to
+   * the pagination toolbar, then degrades to null (fixed positioning).
+   */
+  function findIndicatorAnchor(table) {
+    // Walk ancestors looking for the closest container that holds either
+    // the ticket-count text or the pagination controls. We stop at 8
+    // ancestors (Zendesk's layout has the count within 4-6 normally).
+    let node = table.parentElement;
+    for (let i = 0; node && i < 8; i++, node = node.parentElement) {
+      const inAncestor = findCountTextElement(node);
+      if (inAncestor) return { element: inAncestor };
+    }
+    // Also look in immediately-preceding siblings of each ancestor —
+    // count text often lives in a sibling header, not a wrapping parent.
+    node = table;
+    for (let i = 0; node?.parentElement && i < 8; i++, node = node.parentElement) {
+      let sib = node.previousElementSibling;
+      while (sib) {
+        const found = findCountTextElement(sib);
+        if (found) return { element: found };
+        sib = sib.previousElementSibling;
+      }
+    }
+    // Fallback: the pagination toolbar (Next/Prev container).
+    const paginationBtn = document.querySelector(TICKET_SELECTORS.paginateNext)
+                       || document.querySelector(TICKET_SELECTORS.paginatePrev);
+    if (paginationBtn) {
+      const container = paginationBtn.closest("nav, header, [role='toolbar'], div");
+      if (container) return { element: container };
+    }
+    return null;
+  }
+
+  /**
+   * Find an element whose text matches "<digits> tickets ..." (or similar
+   * count formats Zendesk uses), avoiding deep matches inside the table
+   * body itself. Returns the parent element of the matching text node so
+   * the pill renders inline with it.
+   */
+  const COUNT_TEXT_RE = /^\s*\d+\s+tickets?(?:\s*\(.*\))?\s*$/i;
+  function findCountTextElement(scope) {
+    if (!scope || !scope.querySelectorAll) return null;
+    // Quick filter: skip the table body itself (cells routinely contain
+    // text like "Ticket #1234" that could false-match).
+    if (scope.matches?.("tbody, table")) return null;
+    // Search for short text nodes — count text is brief; full content
+    // walks could be expensive on dense pages.
+    const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const text = node.nodeValue || "";
+        if (text.length > 80) return NodeFilter.FILTER_REJECT;
+        return COUNT_TEXT_RE.test(text)
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_SKIP;
+      },
+    });
+    const match = walker.nextNode();
+    return match ? match.parentElement : null;
   }
 
   // Look for a refresh control near the managed table — walk up a few
@@ -735,11 +884,15 @@
         return;
       }
       if (autoRefresh && autoRefresh.table !== primary) {
+        // SPA route changed to a different table — tear down and recreate.
         autoRefresh.destroy();
         autoRefresh = null;
       }
       if (!autoRefresh) autoRefresh = new TicketAutoRefresh(primary);
-      autoRefresh.start(ar.intervalSec, ar.showIndicator);
+      // reconfigure() is idempotent: it only restarts the timer when the
+      // interval actually changes. This fixes the "never gets below 28s"
+      // bug where the 3-second scan loop kept resetting the countdown.
+      autoRefresh.reconfigure(ar.intervalSec, ar.showIndicator);
     } else if (autoRefresh) {
       autoRefresh.destroy();
       autoRefresh = null;
