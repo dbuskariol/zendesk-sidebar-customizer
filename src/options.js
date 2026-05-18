@@ -168,14 +168,14 @@ const BUILTIN_TEMPLATES = [
   {
     id: "builtin-compact",
     name: "Compact",
-    description: "Dense single-line rows with minimal padding.",
+    description: "Dense single-line rows with minimal padding (sidebar only).",
     includes: ["density"],
     payload: { density: PRESETS.compact },
   },
   {
     id: "builtin-comfortable",
     name: "Comfortable",
-    description: "Generous spacing for readability.",
+    description: "Generous spacing for readability (sidebar only).",
     includes: ["density"],
     payload: { density: PRESETS.comfortable },
   },
@@ -199,6 +199,110 @@ const BUILTIN_TEMPLATES = [
         level: {},
       },
     },
+  },
+
+  /* v0.9.0 — ticket-list templates */
+
+  {
+    id: "builtin-tickets-compact",
+    name: "Tickets — high density",
+    description: "Compact ticket-list rows only. Sidebar untouched.",
+    includes: ["ticketPrefs", "ticketDensity"],
+    payload: {
+      ticketPrefs: { ...DEFAULT_TICKET_PREFS, compact: true },
+      ticketDensity: { ...DEFAULT_TICKET_DENSITY,
+        rowMinHeight: 32, rowFontSize: 13,
+        cellPaddingTop: 4, cellPaddingBottom: 4,
+        cellPaddingLeft: 10, cellPaddingRight: 10,
+        headerMinHeight: 34, headerFontSize: 13,
+      },
+    },
+  },
+  {
+    id: "builtin-lovely-like",
+    name: "Lovely-like (compact + colors + auto-refresh)",
+    description: "Inspired by Lovely Views: compact density, status + SLA colors, auto-refresh every 30s. Bring-your-own-bookmarks (we don't replicate the marketplace features).",
+    includes: ["ticketPrefs", "ticketDensity", "ticketClassifiers", "ticketAutoRefresh"],
+    payload: {
+      ticketPrefs: {
+        ...DEFAULT_TICKET_PREFS,
+        compact: true,
+        colorsEnabled: true,
+        hideEnabled: true,
+      },
+      ticketDensity: { ...DEFAULT_TICKET_DENSITY,
+        rowMinHeight: 30, rowFontSize: 13,
+        cellPaddingTop: 4, cellPaddingBottom: 4,
+        cellPaddingLeft: 10, cellPaddingRight: 10,
+        headerMinHeight: 34, headerFontSize: 13,
+      },
+      // Sticks with the built-in English defaults for status / SLA /
+      // priority. We don't pre-map raw values here because raw values
+      // are tenant-and-locale-specific - the runtime falls back to
+      // DEFAULT_STATUS_RAW_TO_BUCKET for the common English ones, and
+      // anything else stays unclassified until the user maps it.
+      ticketClassifiers: {
+        ...DEFAULT_TICKET_CLASSIFIERS,
+        // Empty mappings + empty pattern arrays = the runtime uses the
+        // built-in English defaults via resolveSlaPatterns /
+        // resolveGroupParsers.
+      },
+      ticketAutoRefresh: {
+        enabled: true,
+        intervalSec: 30,
+        pauseOnSelected: true,
+        showIndicator: true,
+      },
+    },
+  },
+  {
+    id: "builtin-sla-war-room",
+    name: "SLA war room (preview)",
+    description: "Bold SLA-breach highlighting + 15s refresh. Opens a column preview before hiding anything (does NOT auto-hide custom fields without your confirmation).",
+    includes: ["ticketPrefs", "ticketDensity", "ticketClassifiers", "ticketAutoRefresh"],
+    needsColumnConfirmation: true,
+    payload: {
+      ticketPrefs: {
+        ...DEFAULT_TICKET_PREFS,
+        compact: true,
+        colorsEnabled: true,
+        hideEnabled: false,    // user opts in column-by-column
+      },
+      ticketDensity: { ...DEFAULT_TICKET_DENSITY,
+        rowMinHeight: 32, cellPaddingTop: 4, cellPaddingBottom: 4,
+      },
+      ticketClassifiers: {
+        ...DEFAULT_TICKET_CLASSIFIERS,
+        bucketColors: {
+          status: {},
+          sla: {
+            breached: "#d4001e",
+            atRisk:   "#ffae00",
+            met:      null,
+          },
+          priority: {},
+        },
+      },
+      ticketAutoRefresh: {
+        enabled: true,
+        intervalSec: 15,
+        pauseOnSelected: true,
+        showIndicator: true,
+      },
+    },
+    // Set of columns suggested for keeping. Everything else discovered
+    // on the tenant goes into a confirmation dialog where the user picks
+    // what to actually hide. This is the audit's rejection of the v1
+    // "auto-hide non-critical" approach.
+    suggestedKeepColumns: [
+      "generic-table-cells-selectable",
+      "ticket-table-cells-status",
+      "ticket-table-cells-sla",
+      "ticket-table-cells-subject",
+      "ticket-table-cells-assignee",
+      "generic-table-cells-date",
+      "generic-table-cells-id",
+    ],
   },
 ];
 
@@ -1747,17 +1851,62 @@ async function applyTemplate(tpl, fullOverwrite) {
   for (const section of sectionsToApply) {
     const value = tpl.payload?.[section];
     if (value !== undefined) {
-      // Templates always replace, never merge. Route density/theme
-      // through their commit wrappers so the master toggle auto-enables.
-      if (section === "density")    await commitDensity(structuredClone(value), { replace: true });
-      else if (section === "theme") await commitTheme(structuredClone(value), { replace: true });
+      // Templates always replace, never merge. Route writes through the
+      // commit wrappers that auto-enable their master toggle.
+      if (section === "density")              await commitDensity(structuredClone(value), { replace: true });
+      else if (section === "theme")           await commitTheme(structuredClone(value), { replace: true });
+      else if (section === "ticketDensity")   await commitTicketDensity(structuredClone(value), { replace: true });
+      else if (section === "ticketTheme")     await commitTicketTheme(structuredClone(value), { replace: true });
+      else if (section === "ticketClassifiers") await commitTicketClassifiers(structuredClone(value), { replace: true });
       else await store.replace(section, structuredClone(value));
     } else if (fullOverwrite) {
-      // Clear the section for this profile by writing default values.
       await store.replace(section, SECTION_STRATEGY[section].getDefault());
     }
   }
+
+  // v0.9.0 — interactive column-hide confirmation for templates that
+  // suggest hiding columns. We never auto-hide custom-field columns
+  // (audit fix #8: business-critical custom fields would silently vanish).
+  if (tpl.needsColumnConfirmation && Array.isArray(tpl.suggestedKeepColumns)) {
+    await runColumnConfirmationFlow(tpl);
+  }
+
   els.tplStatus.textContent = `Applied "${tpl.name}".`;
+  // Re-render ticket sections so changes are visible without a page reload.
+  renderAllTicketSections();
+}
+
+async function runColumnConfirmationFlow(tpl) {
+  const observed = Object.entries(ticketObservations.ticketColumns || {})
+    .map(([key, info]) => ({ key, label: info.label || key }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+  if (!observed.length) {
+    // Nothing to confirm — user hasn't browsed a ticket list yet on this
+    // tenant. Don't apply any column hides; the template's other settings
+    // (density/colors/auto-refresh) still apply.
+    return;
+  }
+
+  const keepSet = new Set(tpl.suggestedKeepColumns || []);
+  const choices = observed.map((c) => ({
+    value: c.key,
+    label: `${c.label}  —  ${c.key.slice(0, 60)}${c.key.length > 60 ? "…" : ""}`,
+    checked: keepSet.has(c.key) || c.key.startsWith("ticket-table-cells-custom-field-"),
+  }));
+
+  const result = await checkboxModal(
+    `${tpl.name}: keep which columns visible? Unchecked columns will be hidden. Custom-field columns are pre-checked so you don't accidentally hide tenant-specific business data.`,
+    choices,
+  );
+  if (!result) return;   // user cancelled
+
+  const keepKeys = new Set(result);
+  const cols = {};
+  for (const c of observed) {
+    if (!keepKeys.has(c.key)) cols[c.key] = true;
+  }
+  await commitTicketHide(cols);
 }
 
 function exportTemplateFile(tpl) {
@@ -1788,7 +1937,7 @@ function bindTemplates() {
       id: `user-${Date.now().toString(36)}`,
       name, description, includes,
       createdAt: new Date().toISOString(),
-      compatVersion: "0.6",
+      compatVersion: "0.9",
       payload,
     };
     userTemplates.push(tpl);
@@ -1805,7 +1954,7 @@ function bindTemplates() {
     let parsed;
     try { parsed = JSON.parse(text); } catch { els.tplStatus.textContent = "Invalid JSON."; return; }
     if (!parsed?.name || !parsed?.payload) { els.tplStatus.textContent = "Not a valid template file."; return; }
-    if (parsed.compatVersion && parsed.compatVersion !== "0.6") {
+    if (parsed.compatVersion && !["0.6", "0.7", "0.8", "0.9"].includes(parsed.compatVersion)) {
       const proceed = await confirmModal(`Template was exported from v${parsed.compatVersion}. Apply anyway?`);
       if (!proceed) return;
     }
@@ -1826,7 +1975,7 @@ function bindBackup() {
       // Privacy hook for v0.7 when labels arrive; placeholder warning is fine now.
     }
     const payload = {
-      compatVersion: "0.6",
+      compatVersion: "0.9",
       profileId: editingProfileId,
       generatedAt: new Date().toISOString(),
       ...store.snapshot(),
