@@ -15,12 +15,18 @@
 
 const {
   ProfileStore, RESERVED_PROFILE_ID, SECTION_NAMES, SECTION_STRATEGY,
-  LEVEL_TOKEN_RANGES, GLOBAL_TOKEN_RANGES,
-  INTRINSIC_LEVEL, INTRINSIC_GLOBAL,
+  LEVEL_TOKEN_RANGES, GLOBAL_TOKEN_RANGES, TICKET_DENSITY_RANGES,
+  INTRINSIC_LEVEL, INTRINSIC_GLOBAL, INTRINSIC_TICKETS,
   DEFAULT_PREFS, DEFAULT_HIDE, DEFAULT_DENSITY, DEFAULT_ORDER, DEFAULT_THEME,
+  DEFAULT_TICKET_PREFS, DEFAULT_TICKET_DENSITY, DEFAULT_TICKET_THEME,
+  DEFAULT_TICKET_HIDE, DEFAULT_TICKET_CLASSIFIERS, DEFAULT_TICKET_AUTO_REFRESH,
+  DEFAULT_BUCKET_COLORS, DEFAULT_SLA_PATTERNS, DEFAULT_GROUP_PARSERS,
+  SEMANTIC_STATUS_BUCKETS, SEMANTIC_SLA_BUCKETS, SEMANTIC_PRIORITY_BUCKETS,
+  ALLOWED_REFRESH_INTERVALS,
   RE, viewKey, groupKey, deepMerge,
   loadProfileIndex, ensureProfileExists, deleteProfile,
   loadKnownHosts, migrateProfileIndexV07,
+  classifyStatus, classifyPriority, effectiveBucketColor,
 } = window.ZVT;
 
 /* ============================== constants ============================ */
@@ -66,6 +72,55 @@ const THEME_LEVEL_TOKENS = [
   { key: "bgColor", label: "Background" },
   { key: "fgColor", label: "Text color" },
 ];
+
+const TICKET_DENSITY_TOKENS = [
+  { key: "rowMinHeight",     label: "Row min height",  ...TICKET_DENSITY_RANGES.rowMinHeight,     step: 1 },
+  { key: "rowFontSize",      label: "Row font",        ...TICKET_DENSITY_RANGES.rowFontSize,      step: 1 },
+  { key: "cellPaddingTop",   label: "Cell pad ↑",      ...TICKET_DENSITY_RANGES.cellPaddingTop,   step: 1 },
+  { key: "cellPaddingBottom",label: "Cell pad ↓",      ...TICKET_DENSITY_RANGES.cellPaddingBottom,step: 1 },
+  { key: "cellPaddingLeft",  label: "Cell pad ←",      ...TICKET_DENSITY_RANGES.cellPaddingLeft,  step: 1 },
+  { key: "cellPaddingRight", label: "Cell pad →",      ...TICKET_DENSITY_RANGES.cellPaddingRight, step: 1 },
+  { key: "headerMinHeight",  label: "Header min height", ...TICKET_DENSITY_RANGES.headerMinHeight,step: 1 },
+  { key: "headerFontSize",   label: "Header font",     ...TICKET_DENSITY_RANGES.headerFontSize,   step: 1 },
+];
+
+const TICKET_THEME_TOKENS = [
+  { key: "headerBg",        label: "Header background" },
+  { key: "headerFg",        label: "Header text" },
+  { key: "rowHoverBg",      label: "Row hover background" },
+  { key: "rowSelectedBg",   label: "Selected row background" },
+  { key: "groupHeaderBg",   label: "Group header background" },
+  { key: "groupHeaderFg",   label: "Group header text" },
+];
+
+// Ticket-list density presets — calibrated against measured intrinsic
+// values (lib.js INTRINSIC_TICKETS). The biggest visual lever is
+// rowMinHeight (Zendesk's intrinsic 41px is what gives the table its
+// "spacious" feel); shrinking it with reduced cell padding is what
+// makes "compact" feel compact.
+const TICKET_DENSITY_PRESETS = {
+  "ultra-compact": {
+    rowMinHeight: 24, rowFontSize: 12,
+    cellPaddingTop: 2, cellPaddingBottom: 2, cellPaddingLeft: 8, cellPaddingRight: 8,
+    headerMinHeight: 28, headerFontSize: 12,
+  },
+  "compact": {
+    rowMinHeight: 32, rowFontSize: 13,
+    cellPaddingTop: 4, cellPaddingBottom: 4, cellPaddingLeft: 10, cellPaddingRight: 10,
+    headerMinHeight: 34, headerFontSize: 13,
+  },
+  "comfortable": {
+    rowMinHeight: 41, rowFontSize: 14,
+    cellPaddingTop: 10, cellPaddingBottom: 10, cellPaddingLeft: 12, cellPaddingRight: 12,
+    headerMinHeight: 40, headerFontSize: 14,
+  },
+  // Zendesk default = clear every token (resets to intrinsic).
+  "zendesk": null,
+  // Clear-all also nulls every token; preserved as a separate action
+  // because the rendering layer distinguishes "intentional clear" from
+  // "apply Zendesk preset".
+  "clear":   null,
+};
 
 // Density presets — calibrated against the actual Zendesk intrinsic
 // values (see lib.js INTRINSIC_LEVEL/GLOBAL). The biggest visual lever
@@ -250,6 +305,21 @@ function bindEls() {
     "export-btn","import-btn","import-file","reset-profile","backup-status",
     "diag","copy-diag",
     "modal-root",
+    // v0.9.0 — ticket list
+    "ticket-enabled","ticket-compact","ticket-themed","ticket-colors-enabled","ticket-hide-enabled",
+    "ticketPrefs-fork",
+    "ticket-density-grid","ticketDensity-fork",
+    "ticket-columns-search","ticket-columns-show-all","ticket-columns-rescan",
+    "ticket-columns-status","ticket-columns-list","ticket-columns-empty",
+    "ticketHide-fork",
+    "ticket-status-table","ticket-status-empty",
+    "ticket-priority-table","ticket-priority-empty",
+    "ticket-sla-table","ticket-sla-add","ticket-sla-defaults",
+    "ticket-bucket-colors",
+    "ticketClassifiers-fork",
+    "ticket-autorefresh-enabled","ticket-autorefresh-interval","ticket-autorefresh-pause","ticket-autorefresh-indicator",
+    "ticketAutoRefresh-fork",
+    "ticket-theme-grid","ticketTheme-fork",
   ]) {
     els[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = $(id);
   }
@@ -2074,7 +2144,10 @@ async function switchEditingProfile(id) {
   store = new ProfileStore(id);
   await store.load();
   if (myGen !== switchGen) return;
-  await loadDiscoveryForProfile(catalogSourceFor(id));
+  await Promise.all([
+    loadDiscoveryForProfile(catalogSourceFor(id)),
+    loadTicketObservationsForProfile(catalogSourceFor(id)),
+  ]);
   if (myGen !== switchGen) return;
   renderAll();
 }
@@ -2197,6 +2270,7 @@ function renderAll() {
   renderHide();
   renderCustomize();
   renderReorder();
+  renderAllTicketSections();
   renderTemplates();
   renderDiag();
   renderStatusPill();
@@ -2210,6 +2284,7 @@ function bindAll() {
   bindHide();
   bindCustomize();
   bindReorder();
+  bindAllTicketSections();
   bindTemplates();
   bindBackup();
   els.openZendesk.addEventListener("click", async () => {
@@ -2269,12 +2344,18 @@ function bindAll() {
   // is mid-interaction. Bug 1: native color picker dropdown closes if its
   // backing <input> gets recreated.
   const SECTION_RENDERERS = {
-    prefs:       renderGeneral,
-    density:     renderDensity,
-    theme:       renderTheme,
-    hide:        renderHide,
-    order:       renderReorder,
-    customViews: renderCustomize,
+    prefs:             renderGeneral,
+    density:           renderDensity,
+    theme:             renderTheme,
+    hide:              renderHide,
+    order:             renderReorder,
+    customViews:       renderCustomize,
+    ticketPrefs:       renderTicketGeneral,
+    ticketDensity:     renderTicketDensity,
+    ticketTheme:       renderTicketTheme,
+    ticketHide:        renderTicketColumns,
+    ticketClassifiers: renderTicketColors,
+    ticketAutoRefresh: renderTicketAutoRefresh,
   };
 
   chrome.storage.onChanged.addListener(async (changes, area) => {
@@ -2316,6 +2397,7 @@ function bindAll() {
     let knownHostsChanged = false;
     let editingChanged = false;
     let lastHostChanged = false;
+    let ticketObservationsChanged = false;
     for (const k of Object.keys(changes)) {
       if (k.startsWith("selectorHealth:")) healthChanged = true;
       if (k === "templates") templatesChanged = true;
@@ -2328,6 +2410,11 @@ function bindAll() {
          k.startsWith("discoveredContainers:")) &&
         k.endsWith(`:${catalogSourceFor(editingProfileId)}`)
       ) discoveryChanged = true;
+      // v0.9.0 — ticket observations live in tenantData:<host> and update
+      // whenever the content script discovers new columns / status values.
+      if (k === `tenantData:${catalogSourceFor(editingProfileId)}`) {
+        ticketObservationsChanged = true;
+      }
     }
     if (healthChanged) {
       await loadAllHealth();
@@ -2340,6 +2427,11 @@ function bindAll() {
       renderCustomize();
       renderReorder();
       renderDiag();
+    }
+    if (ticketObservationsChanged) {
+      await loadTicketObservationsForProfile(catalogSourceFor(editingProfileId));
+      renderTicketColumns();
+      renderTicketColors();
     }
     if (templatesChanged) {
       userTemplates = changes.templates.newValue || [];
@@ -2389,6 +2481,605 @@ function bindAll() {
   setInterval(refreshTabContext, 30_000);
 }
 
+/* ====================================================================
+ * v0.9.0 — Ticket-list section renderers + binders
+ * ====================================================================
+ * Mirrors the sidebar render/bind pattern but with sections scoped to
+ * the ticket-list feature area. Reads tenant observations from
+ * chrome.storage.local.tenantData[host] (populated by tickets.js).
+ *
+ * Every section here is fully optional and fully dynamic:
+ *   - Status/priority mappings render whatever was observed on this tenant.
+ *   - SLA patterns default to English; user can add localized regexes.
+ *   - Column list renders whatever columns have been seen in any view
+ *     on this tenant. Custom-field columns surface with their tenant-
+ *     scoped IDs and stay in storage.local.
+ */
+
+let ticketObservations = makeEmptyTicketObservations();
+
+function makeEmptyTicketObservations() {
+  return {
+    statusesRaw: {}, slaRaw: {}, groupHeaders: {},
+    columnLayouts: {}, ticketColumns: {},
+  };
+}
+
+async function loadTicketObservationsForProfile(profileId) {
+  ticketObservations = makeEmptyTicketObservations();
+  if (!profileId || profileId === RESERVED_PROFILE_ID) return;
+  const key = `tenantData:${profileId}`;
+  const res = await new Promise((r) => chrome.storage.local.get(key, r));
+  const data = res?.[key];
+  if (data?.ticketObservations) {
+    ticketObservations = {
+      ...makeEmptyTicketObservations(),
+      ...data.ticketObservations,
+    };
+  }
+}
+
+/* ---------- commit wrappers (auto-enable mirror of commitDensity/Theme) ---------- */
+
+async function commitTicketPrefs(patch) {
+  if (!store) return;
+  await store.update("ticketPrefs", patch);
+}
+async function commitTicketDensity(patch, opts = {}) {
+  if (opts.replace) await store.replace("ticketDensity", patch);
+  else await store.update("ticketDensity", patch);
+  await commitTicketPrefs({ compact: true });
+}
+async function commitTicketTheme(patch, opts = {}) {
+  if (opts.replace) await store.replace("ticketTheme", patch);
+  else await store.update("ticketTheme", patch);
+  await commitTicketPrefs({ themed: true });
+}
+async function commitTicketHide(cols) {
+  // Replace semantics — `cols` is the new authoritative map of {key: true}
+  // for hidden columns. Caller passes the full desired map.
+  await store.replace("ticketHide", { cols });
+  await commitTicketPrefs({ hideEnabled: true });
+}
+async function commitTicketClassifiers(patch, opts = {}) {
+  if (opts.replace) await store.replace("ticketClassifiers", patch);
+  else await store.update("ticketClassifiers", patch);
+  await commitTicketPrefs({ colorsEnabled: true });
+}
+async function commitTicketAutoRefresh(patch) {
+  await store.update("ticketAutoRefresh", patch);
+}
+
+/* ---------- General (master toggles) ---------- */
+
+function renderTicketGeneral() {
+  const p = store.resolve("ticketPrefs");
+  els.ticketEnabled.checked       = !!p.enabled;
+  els.ticketCompact.checked       = !!p.compact;
+  els.ticketThemed.checked        = !!p.themed;
+  els.ticketColorsEnabled.checked = !!p.colorsEnabled;
+  els.ticketHideEnabled.checked   = !!p.hideEnabled;
+  renderForkLine("ticketPrefs", "ticketPrefs-fork");
+}
+function bindTicketGeneral() {
+  const map = {
+    ticketEnabled: "enabled",
+    ticketCompact: "compact",
+    ticketThemed: "themed",
+    ticketColorsEnabled: "colorsEnabled",
+    ticketHideEnabled: "hideEnabled",
+  };
+  for (const [elKey, prefKey] of Object.entries(map)) {
+    els[elKey].addEventListener("change", () => {
+      commitTicketPrefs({ [prefKey]: !!els[elKey].checked });
+    });
+  }
+}
+
+/* ---------- Density ---------- */
+
+function renderTicketDensity() {
+  const d = store.resolve("ticketDensity") || {};
+  els.ticketDensityGrid.innerHTML = "";
+  for (const tk of TICKET_DENSITY_TOKENS) {
+    const value = d[tk.key];
+    const defaultRef = INTRINSIC_TICKETS[tk.key];
+    els.ticketDensityGrid.appendChild(buildRow({
+      kind: "number", label: tk.label, min: tk.min, max: tk.max, step: tk.step,
+      value: value == null ? null : value, defaultRef,
+      onPreview: (v) => queuePreview({ ticketDensity: { [tk.key]: v } }),
+      onCommit:  (v) => commitTicketDensity({ [tk.key]: v }),
+      onClear:   async () => { await commitTicketDensity({ [tk.key]: null }); },
+      section: "ticketDensity",
+    }));
+  }
+  renderForkLine("ticketDensity", "ticketDensity-fork");
+}
+function bindTicketDensity() {
+  document.querySelectorAll('[data-ticket-density-preset]').forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const name = btn.dataset.ticketDensityPreset;
+      const preset = TICKET_DENSITY_PRESETS[name];
+      if (preset === null) {
+        // Zendesk default / Clear all — wipe all tokens to null.
+        await commitTicketDensity(structuredClone(DEFAULT_TICKET_DENSITY), { replace: true });
+        if (name === "zendesk") {
+          // Also turn off compact mode so the user sees pure Zendesk.
+          await commitTicketPrefs({ compact: false });
+        }
+      } else {
+        await commitTicketDensity(structuredClone(preset), { replace: true });
+      }
+      renderTicketDensity();
+      renderTicketGeneral();
+    });
+  });
+}
+
+/* ---------- Theme ---------- */
+
+function renderTicketTheme() {
+  const t = store.resolve("ticketTheme") || {};
+  els.ticketThemeGrid.innerHTML = "";
+  for (const tk of TICKET_THEME_TOKENS) {
+    els.ticketThemeGrid.appendChild(buildRow({
+      kind: "color", label: tk.label,
+      value: t[tk.key] || null,
+      onPreview: (v) => queuePreview({ ticketTheme: { [tk.key]: v } }),
+      onCommit:  (v) => commitTicketTheme({ [tk.key]: v }),
+      onClear:   async () => { await commitTicketTheme({ [tk.key]: null }); },
+      section: "ticketTheme",
+    }));
+  }
+  renderForkLine("ticketTheme", "ticketTheme-fork");
+}
+
+/* ---------- Columns (hide list) ---------- */
+
+function renderTicketColumns() {
+  const hide = store.resolve("ticketHide") || { cols: {} };
+  const hidden = hide.cols || {};
+
+  // Inputs: every column ever seen on this tenant (sorted by label).
+  const allCols = Object.entries(ticketObservations.ticketColumns || {})
+    .map(([key, info]) => ({ key, ...info }))
+    .sort((a, b) => (a.label || "").localeCompare(b.label || ""));
+
+  els.ticketColumnsList.innerHTML = "";
+  if (!allCols.length) {
+    els.ticketColumnsList.hidden = true;
+    els.ticketColumnsEmpty.hidden = false;
+    renderForkLine("ticketHide", "ticketHide-fork");
+    return;
+  }
+  els.ticketColumnsList.hidden = false;
+  els.ticketColumnsEmpty.hidden = true;
+
+  const searchTerm = (els.ticketColumnsSearch.value || "").toLowerCase();
+  const filtered = allCols.filter((c) => {
+    if (!searchTerm) return true;
+    return (c.label || "").toLowerCase().includes(searchTerm) ||
+           (c.key || "").toLowerCase().includes(searchTerm);
+  });
+
+  for (const col of filtered) {
+    const li = document.createElement("li");
+    if (hidden[col.key]) li.classList.add("hidden-col");
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !hidden[col.key];           // checked = visible
+    cb.setAttribute("aria-label", `${col.label || col.key} visibility`);
+    cb.addEventListener("change", async () => {
+      const next = { ...hidden };
+      if (cb.checked) delete next[col.key];
+      else next[col.key] = true;
+      await commitTicketHide(next);
+    });
+
+    const labelEl = document.createElement("span");
+    labelEl.className = "col-label";
+    labelEl.textContent = col.label || "(no label)";
+
+    const keyEl = document.createElement("code");
+    keyEl.className = "col-key";
+    keyEl.textContent = col.key;
+    keyEl.title = col.key;
+
+    const scopeEl = document.createElement("span");
+    scopeEl.className = "col-scope";
+    scopeEl.textContent = describeColumnScope(col.key);
+    scopeEl.title = describeColumnScopeFull(col.key);
+
+    li.append(cb, labelEl, keyEl, scopeEl);
+    els.ticketColumnsList.appendChild(li);
+  }
+  renderForkLine("ticketHide", "ticketHide-fork");
+}
+function describeColumnScope(key) {
+  if (key.startsWith("ticket-table-cells-custom-field-")) return "tenant";
+  if (key.startsWith("layout:")) return "layout";
+  if (key.includes("|label:")) return "label";
+  return "global";
+}
+function describeColumnScopeFull(key) {
+  if (key.startsWith("ticket-table-cells-custom-field-"))
+    return "Tenant-specific custom field. Hidden only for this tenant.";
+  if (key.startsWith("layout:"))
+    return "Layout-scoped column. Hidden only in tables with this column layout.";
+  if (key.includes("|label:"))
+    return "Compound key (test-id + header label). Distinct from other columns with the same test-id but different labels.";
+  return "Zendesk canonical column. Applies across all tenants and views.";
+}
+function bindTicketColumns() {
+  els.ticketColumnsSearch.addEventListener("input", renderTicketColumns);
+  els.ticketColumnsShowAll.addEventListener("click", async () => {
+    await commitTicketHide({});
+  });
+  els.ticketColumnsRescan.addEventListener("click", async () => {
+    // Ask any open tab on this tenant to rescan its ticket tables, then
+    // reload our local catalog.
+    if (editingProfileId !== RESERVED_PROFILE_ID) {
+      const tabs = await chrome.tabs.query({ url: `https://${editingProfileId}/*` });
+      for (const t of tabs) await safeSend(t.id, { type: "zvt:rescan" });
+    }
+    // Allow tickets.js a moment to flush observations before reloading.
+    setTimeout(async () => {
+      await loadTicketObservationsForProfile(editingProfileId);
+      renderTicketColumns();
+      renderTicketColors();
+      els.ticketColumnsStatus.textContent = "Refreshed.";
+      setTimeout(() => { els.ticketColumnsStatus.textContent = ""; }, 2000);
+    }, 2500);
+    els.ticketColumnsStatus.textContent = "Asking open tabs to rescan…";
+  });
+}
+
+/* ---------- Colors (classifiers) ---------- */
+
+function renderTicketColors() {
+  renderStatusMappings();
+  renderPriorityMappings();
+  renderSlaPatterns();
+  renderBucketColors();
+  renderForkLine("ticketClassifiers", "ticketClassifiers-fork");
+}
+
+function renderStatusMappings() {
+  const cls = store.resolve("ticketClassifiers") || DEFAULT_TICKET_CLASSIFIERS;
+  const userMap = cls.statusByRaw || {};
+  const observed = Object.entries(ticketObservations.statusesRaw || {})
+    .map(([k, v]) => [k, v.count || 0])
+    .sort((a, b) => b[1] - a[1]);
+
+  // Always also include any user-mapped values that aren't currently observed.
+  const observedKeys = new Set(observed.map(([k]) => k));
+  for (const k of Object.keys(userMap)) {
+    if (!observedKeys.has(k)) observed.push([k, 0]);
+  }
+
+  const tbody = els.ticketStatusTable.querySelector("tbody");
+  tbody.innerHTML = "";
+  if (!observed.length) {
+    els.ticketStatusEmpty.hidden = false;
+    return;
+  }
+  els.ticketStatusEmpty.hidden = true;
+
+  for (const [raw, count] of observed) {
+    tbody.appendChild(makeClassifierRow({
+      raw, count, category: "status",
+      currentBucket: userMap[raw]?.bucket || classifyStatus(raw, cls)?.bucket || null,
+      currentColor: userMap[raw]?.color || null,
+      bucketOptions: SEMANTIC_STATUS_BUCKETS,
+      onChange: async ({ bucket, color }) => {
+        const next = structuredClone(cls);
+        next.statusByRaw = next.statusByRaw || {};
+        if (!bucket && !color) {
+          next.statusByRaw[raw] = null;          // tombstone
+        } else {
+          next.statusByRaw[raw] = { bucket: bucket || null, color: color || null };
+        }
+        await commitTicketClassifiers(next, { replace: true });
+      },
+    }));
+  }
+}
+
+function renderPriorityMappings() {
+  const cls = store.resolve("ticketClassifiers") || DEFAULT_TICKET_CLASSIFIERS;
+  const userMap = cls.priorityByRaw || {};
+
+  // Priority observations come from group headers. We extract candidate
+  // priority values by running each group header through the configured
+  // parsers and collecting values where groupField === "priority".
+  const parsers = (cls.groupParsers && cls.groupParsers.length ? cls.groupParsers : DEFAULT_GROUP_PARSERS)
+    .map((p) => { try { return { re: new RegExp(p.pattern, p.flags || "i"), groupField: p.groupField }; } catch { return null; } })
+    .filter(Boolean);
+  const observed = new Map();   // raw → count
+  for (const [text, info] of Object.entries(ticketObservations.groupHeaders || {})) {
+    for (const { re, groupField } of parsers) {
+      if (groupField !== "priority") continue;
+      const m = text.match(re);
+      if (m && m[1]) {
+        const v = m[1].trim().toLowerCase();
+        observed.set(v, (observed.get(v) || 0) + (info.count || 1));
+        break;
+      }
+    }
+  }
+  for (const k of Object.keys(userMap)) {
+    if (!observed.has(k)) observed.set(k, 0);
+  }
+
+  const tbody = els.ticketPriorityTable.querySelector("tbody");
+  tbody.innerHTML = "";
+  if (!observed.size) {
+    els.ticketPriorityEmpty.hidden = false;
+    return;
+  }
+  els.ticketPriorityEmpty.hidden = true;
+
+  const sorted = [...observed.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [raw, count] of sorted) {
+    tbody.appendChild(makeClassifierRow({
+      raw, count, category: "priority",
+      currentBucket: userMap[raw]?.bucket || classifyPriority(raw, cls)?.bucket || null,
+      currentColor: userMap[raw]?.color || null,
+      bucketOptions: SEMANTIC_PRIORITY_BUCKETS,
+      onChange: async ({ bucket, color }) => {
+        const next = structuredClone(cls);
+        next.priorityByRaw = next.priorityByRaw || {};
+        if (!bucket && !color) {
+          next.priorityByRaw[raw] = null;
+        } else {
+          next.priorityByRaw[raw] = { bucket: bucket || null, color: color || null };
+        }
+        await commitTicketClassifiers(next, { replace: true });
+      },
+    }));
+  }
+}
+
+function makeClassifierRow({ raw, count, category, currentBucket, currentColor, bucketOptions, onChange }) {
+  const tr = document.createElement("tr");
+  if (!currentBucket) tr.classList.add("no-bucket");
+
+  const rawTd = document.createElement("td");
+  rawTd.className = "raw";
+  rawTd.textContent = raw + (count ? ` (${count})` : "");
+
+  const bucketTd = document.createElement("td");
+  const select = document.createElement("select");
+  const blank = document.createElement("option");
+  blank.value = ""; blank.textContent = "—";
+  select.appendChild(blank);
+  for (const b of bucketOptions) {
+    const o = document.createElement("option");
+    o.value = b; o.textContent = b;
+    if (b === currentBucket) o.selected = true;
+    select.appendChild(o);
+  }
+  bucketTd.appendChild(select);
+
+  const colorTd = document.createElement("td");
+  const colorIn = document.createElement("input");
+  colorIn.type = "color";
+  colorIn.value = currentColor || (DEFAULT_BUCKET_COLORS[category]?.[currentBucket] || "#888888");
+  colorIn.title = "Color override (empty = bucket default)";
+  colorTd.appendChild(colorIn);
+
+  const removeTd = document.createElement("td");
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "row-remove";
+  removeBtn.textContent = "×";
+  removeBtn.title = "Clear mapping (tombstone)";
+  removeBtn.addEventListener("click", () => onChange({ bucket: null, color: null }));
+  removeTd.appendChild(removeBtn);
+
+  let pendingColor = currentColor;
+  select.addEventListener("change", () => {
+    onChange({ bucket: select.value || null, color: pendingColor });
+  });
+  colorIn.addEventListener("change", () => {
+    pendingColor = colorIn.value;
+    onChange({ bucket: select.value || null, color: colorIn.value });
+  });
+
+  tr.append(rawTd, bucketTd, colorTd, removeTd);
+  return tr;
+}
+
+function renderSlaPatterns() {
+  const cls = store.resolve("ticketClassifiers") || DEFAULT_TICKET_CLASSIFIERS;
+  const patterns = (cls.slaPatterns && cls.slaPatterns.length) ? cls.slaPatterns : DEFAULT_SLA_PATTERNS;
+  const tbody = els.ticketSlaTable.querySelector("tbody");
+  tbody.innerHTML = "";
+
+  patterns.forEach((p, idx) => {
+    const tr = document.createElement("tr");
+    const patternTd = document.createElement("td");
+    const flagsTd = document.createElement("td");
+    const bucketTd = document.createElement("td");
+    const actionTd = document.createElement("td");
+
+    const patternIn = document.createElement("input");
+    patternIn.type = "text"; patternIn.value = p.pattern; patternIn.placeholder = "regex";
+    patternTd.appendChild(patternIn);
+
+    const flagsIn = document.createElement("input");
+    flagsIn.type = "text"; flagsIn.value = p.flags || "i"; flagsIn.placeholder = "i"; flagsIn.style.width = "40px";
+    flagsTd.appendChild(flagsIn);
+
+    const select = document.createElement("select");
+    const blank = document.createElement("option");
+    blank.value = ""; blank.textContent = "—";
+    select.appendChild(blank);
+    for (const b of SEMANTIC_SLA_BUCKETS) {
+      const o = document.createElement("option");
+      o.value = b; o.textContent = b;
+      if (b === p.bucket) o.selected = true;
+      select.appendChild(o);
+    }
+    bucketTd.appendChild(select);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button"; removeBtn.className = "row-remove"; removeBtn.textContent = "×";
+    removeBtn.title = "Remove pattern";
+    actionTd.appendChild(removeBtn);
+
+    const commit = async () => {
+      const next = structuredClone(cls);
+      const list = Array.isArray(next.slaPatterns) && next.slaPatterns.length ? next.slaPatterns : DEFAULT_SLA_PATTERNS.map(x => ({ ...x }));
+      list[idx] = { pattern: patternIn.value, flags: flagsIn.value, bucket: select.value };
+      next.slaPatterns = list.filter(Boolean);
+      await commitTicketClassifiers(next, { replace: true });
+    };
+    patternIn.addEventListener("change", commit);
+    flagsIn.addEventListener("change", commit);
+    select.addEventListener("change", commit);
+    removeBtn.addEventListener("click", async () => {
+      const next = structuredClone(cls);
+      const list = Array.isArray(next.slaPatterns) && next.slaPatterns.length ? next.slaPatterns : DEFAULT_SLA_PATTERNS.map(x => ({ ...x }));
+      list.splice(idx, 1);
+      next.slaPatterns = list;
+      await commitTicketClassifiers(next, { replace: true });
+    });
+
+    tr.append(patternTd, flagsTd, bucketTd, actionTd);
+    tbody.appendChild(tr);
+  });
+}
+
+function bindSlaPatternControls() {
+  els.ticketSlaAdd.addEventListener("click", async () => {
+    const cls = store.resolve("ticketClassifiers");
+    const next = structuredClone(cls);
+    const list = Array.isArray(next.slaPatterns) && next.slaPatterns.length ? next.slaPatterns : DEFAULT_SLA_PATTERNS.map(x => ({ ...x }));
+    list.push({ pattern: "", flags: "i", bucket: "" });
+    next.slaPatterns = list;
+    await commitTicketClassifiers(next, { replace: true });
+  });
+  els.ticketSlaDefaults.addEventListener("click", async () => {
+    const cls = store.resolve("ticketClassifiers");
+    const next = structuredClone(cls);
+    next.slaPatterns = DEFAULT_SLA_PATTERNS.map(x => ({ ...x }));
+    await commitTicketClassifiers(next, { replace: true });
+  });
+}
+
+function renderBucketColors() {
+  const cls = store.resolve("ticketClassifiers") || DEFAULT_TICKET_CLASSIFIERS;
+  const container = els.ticketBucketColors;
+  container.innerHTML = "";
+
+  for (const category of ["status", "sla", "priority"]) {
+    const header = document.createElement("div");
+    header.className = "category-header";
+    header.textContent = category;
+    container.appendChild(header);
+    const buckets = category === "status" ? SEMANTIC_STATUS_BUCKETS
+                  : category === "sla"    ? SEMANTIC_SLA_BUCKETS
+                  : SEMANTIC_PRIORITY_BUCKETS;
+    for (const bucket of buckets) {
+      const row = document.createElement("div");
+      row.className = "bucket-row";
+
+      const label = document.createElement("label");
+      label.textContent = bucket;
+      row.appendChild(label);
+
+      const override = cls.bucketColors?.[category]?.[bucket];
+      const effective = override === null ? null
+                      : (override || DEFAULT_BUCKET_COLORS[category]?.[bucket] || "#888888");
+
+      const colorIn = document.createElement("input");
+      colorIn.type = "color";
+      colorIn.value = effective || "#888888";
+
+      const hex = document.createElement("input");
+      hex.type = "text";
+      hex.className = "hex";
+      hex.placeholder = DEFAULT_BUCKET_COLORS[category]?.[bucket] || "—";
+      hex.value = override || "";
+
+      const clearBtn = document.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.className = "bucket-clear";
+      clearBtn.textContent = "×";
+      clearBtn.title = "Clear override (use built-in default)";
+      clearBtn.disabled = !override;
+
+      const setVal = async (val) => {
+        const next = structuredClone(cls);
+        next.bucketColors = next.bucketColors || { status: {}, sla: {}, priority: {} };
+        next.bucketColors[category] = next.bucketColors[category] || {};
+        next.bucketColors[category][bucket] = val;            // null = tombstone
+        await commitTicketClassifiers(next, { replace: true });
+      };
+
+      colorIn.addEventListener("change", () => { hex.value = colorIn.value; setVal(colorIn.value); });
+      hex.addEventListener("change", () => {
+        const v = hex.value.trim();
+        if (!v) { setVal(null); return; }
+        const n = normHex(v);
+        if (n) { colorIn.value = n; setVal(n); } else hex.value = override || "";
+      });
+      clearBtn.addEventListener("click", () => setVal(null));
+
+      row.append(colorIn, hex, clearBtn);
+      container.appendChild(row);
+    }
+  }
+}
+
+/* ---------- Auto-refresh ---------- */
+
+function renderTicketAutoRefresh() {
+  const ar = store.resolve("ticketAutoRefresh") || DEFAULT_TICKET_AUTO_REFRESH;
+  els.ticketAutorefreshEnabled.checked = !!ar.enabled;
+  els.ticketAutorefreshInterval.value  = String(ar.intervalSec);
+  els.ticketAutorefreshPause.checked   = !!ar.pauseOnSelected;
+  els.ticketAutorefreshIndicator.checked = !!ar.showIndicator;
+  renderForkLine("ticketAutoRefresh", "ticketAutoRefresh-fork");
+}
+function bindTicketAutoRefresh() {
+  els.ticketAutorefreshEnabled.addEventListener("change", () => {
+    commitTicketAutoRefresh({ enabled: els.ticketAutorefreshEnabled.checked });
+  });
+  els.ticketAutorefreshInterval.addEventListener("change", () => {
+    const v = Number(els.ticketAutorefreshInterval.value);
+    if (ALLOWED_REFRESH_INTERVALS.includes(v)) {
+      commitTicketAutoRefresh({ intervalSec: v });
+    }
+  });
+  els.ticketAutorefreshPause.addEventListener("change", () => {
+    commitTicketAutoRefresh({ pauseOnSelected: els.ticketAutorefreshPause.checked });
+  });
+  els.ticketAutorefreshIndicator.addEventListener("change", () => {
+    commitTicketAutoRefresh({ showIndicator: els.ticketAutorefreshIndicator.checked });
+  });
+}
+
+/* ---------- Master wiring (ticket sections) ---------- */
+
+function renderAllTicketSections() {
+  renderTicketGeneral();
+  renderTicketDensity();
+  renderTicketTheme();
+  renderTicketColumns();
+  renderTicketColors();
+  renderTicketAutoRefresh();
+}
+function bindAllTicketSections() {
+  bindTicketGeneral();
+  bindTicketDensity();
+  bindTicketColumns();
+  bindSlaPatternControls();
+  bindTicketAutoRefresh();
+}
+
 /* ============================== boot ============================== */
 
 (async function init() {
@@ -2405,6 +3096,7 @@ function bindAll() {
   await store.load();
   await Promise.all([
     loadDiscoveryForProfile(editingProfileId === RESERVED_PROFILE_ID ? null : editingProfileId),
+    loadTicketObservationsForProfile(editingProfileId === RESERVED_PROFILE_ID ? null : editingProfileId),
     loadAllHealth(),
     loadUserTemplates(),
     refreshTabContext(),
