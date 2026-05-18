@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zendesk Sidebar Customizer",
-  "version": "0.10.9",
+  "version": "0.10.10",
   "description": "Customize the Zendesk Support views sidebar — per-tenant profiles, theming, per-view styling, reorder, live preview.",
   "icons": {
     "16": "icons/icon16.png",
