@@ -2012,7 +2012,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
         this.clonedRows.push(clone);
         this.clonedTicketIds.add(id);
       }
-      console.log("[zvt-tickets] snapshotted", this.clonedRows.length, "cloned rows");
+      console.log("[zvt-tickets] snapshotted", this.clonedRows.length, "cloned rows from", nativeRows.length, "native rows in tbody");
     }
 
     rowTicketId(row) {
@@ -2036,8 +2036,20 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
      * mutations we caused ourselves (clonedRows already in tbody).
      */
     onTbodyMutation(muts) {
+      const beforeNative = this.tbody?.querySelectorAll(
+        `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
+      ).length || 0;
+      const beforeClones = this.tbody?.querySelectorAll(
+        `${TICKET_SELECTORS.dataRow}[data-zvt-cloned]`
+      ).length || 0;
+      console.log("[zvt-tickets] tbody mutation", {
+        expectedReplace: this.expectedReplace,
+        beforeNative, beforeClones,
+        snapshotted: this.clonedRows.length,
+        muts: muts.length,
+      });
+
       if (!this.expectedReplace) return;
-      // Only react to mutations that added new native rows (not our clones).
       let nativeAdded = false;
       for (const mut of muts) {
         for (const node of mut.addedNodes) {
@@ -2050,9 +2062,6 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       }
       if (!nativeAdded) return;
 
-      // De-dupe: if Zendesk's new render already contains a ticket we
-      // also have in our cloned rows, prefer the native one (drop the
-      // clone). Match by ticket ID.
       this.expectedReplace = false;
       this.prependClonedRows();
     }
@@ -2060,7 +2069,6 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     prependClonedRows() {
       if (!this.tbody || !this.clonedRows.length) return;
 
-      // Drop clones whose ticket ID now appears as a native row.
       const nativeIds = new Set();
       this.tbody.querySelectorAll(
         `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
@@ -2068,6 +2076,9 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
         const id = this.rowTicketId(r);
         if (id != null) nativeIds.add(id);
       });
+      const droppedCount = this.clonedRows.filter((c) =>
+        nativeIds.has(Number(c.getAttribute("data-zvt-ticket-id")))
+      ).length;
       const survivingClones = this.clonedRows.filter((c) => {
         const id = Number(c.getAttribute("data-zvt-ticket-id"));
         if (nativeIds.has(id)) {
@@ -2078,26 +2089,34 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       });
       this.clonedRows = survivingClones;
 
-      // Find the first native row in the current tbody and insert all
-      // surviving clones before it. If there's no native row (rare),
-      // append to tbody.
+      console.log("[zvt-tickets] prepend evaluating", {
+        nativeIdsInTbody: nativeIds.size,
+        droppedClones: droppedCount,
+        survivingClones: survivingClones.length,
+      });
+
       const firstNative = this.tbody.querySelector(
         `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
       );
       const anchor = firstNative || null;
       for (const clone of this.clonedRows) {
-        // If clone is already in DOM (re-inserted from a prior pass),
-        // we still need to move it to the top — DOM nodes can only
-        // exist in one place, so insertBefore moves it.
         this.tbody.insertBefore(clone, anchor);
       }
-      console.log("[zvt-tickets] prepended", this.clonedRows.length, "cloned rows above current page");
+      const totalNative = this.tbody.querySelectorAll(
+        `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
+      ).length;
+      const totalClones = this.tbody.querySelectorAll(
+        `${TICKET_SELECTORS.dataRow}[data-zvt-cloned]`
+      ).length;
+      console.log("[zvt-tickets] AFTER prepend", {
+        prependedClones: this.clonedRows.length,
+        finalTbodyNative: totalNative,
+        finalTbodyClones: totalClones,
+        finalTbodyTotal: totalNative + totalClones,
+      });
 
       if (this.loadingEl) {
-        const total = this.clonedRows.length + (this.tbody.querySelectorAll(
-          `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
-        ).length);
-        this.loadingEl.textContent = `${total} tickets loaded — scroll for more`;
+        this.loadingEl.textContent = `${totalNative + totalClones} tickets loaded — scroll for more`;
         setTimeout(() => this.removeLoadingIndicator(), 1500);
       }
     }
