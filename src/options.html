@@ -337,27 +337,20 @@
           <h2>Ticket list — Hover preview</h2>
           <div class="card-body">
             <p class="sub">
-              Zendesk shows a small popup when you hover over a row, with
-              the ticket description and most recent comments. By default
-              it's cramped and closes as soon as you move the mouse. This
-              section makes it Lovely-like: pick a wider layout and (in
-              iframe mode) the actual ticket viewer is embedded.
+              Replaces Zendesk's built-in ticket-row tooltip with a wider,
+              Lovely-Views-style preview. Shows the ticket subject, a
+              compact metadata strip, and (when Full conversation is on)
+              the entire conversation history with the newest reply first.
             </p>
             <label class="toggle"><input type="checkbox" id="ticket-hover-enhanced" /> <span>Enhanced hover preview</span></label>
-            <fieldset class="reorder-mode">
-              <legend>Preview body</legend>
-              <label><input type="radio" name="ticketHoverMode" value="iframe" /> Embedded ticket viewer (iframe) — Lovely-style, shows the actual ticket page</label>
-              <label><input type="radio" name="ticketHoverMode" value="summary" /> API summary — custom layout with metadata strip + comment list</label>
-            </fieldset>
             <div id="ticket-hover-grid" class="density-grid"></div>
-            <label class="toggle"><input type="checkbox" id="ticket-hover-scroll-comments" /> <span>(Summary mode) make the comments list scroll inside the popup</span></label>
+            <label class="toggle"><input type="checkbox" id="ticket-hover-scroll-comments" /> <span>Make the comments list scroll inside the popup</span></label>
             <label class="toggle"><input type="checkbox" id="ticket-hover-sticky" /> <span>Sticky mode — keep popup open while hovering it; dismiss with Esc or click outside</span></label>
-            <label class="toggle"><input type="checkbox" id="ticket-hover-full-conversation" /> <span>(Summary mode) fetch full conversation history via the Zendesk API</span></label>
+            <label class="toggle"><input type="checkbox" id="ticket-hover-full-conversation" /> <span>Fetch full conversation history via the Zendesk API (newest reply first)</span></label>
             <p class="sub small">
-              Iframe mode loads <code>/agent/tickets/&lt;id&gt;</code> in
-              the popup, so you get exactly what you'd see on the full
-              ticket page. Summary mode is faster but renders a custom
-              view from the REST API.
+              Conversation data is fetched via your existing Zendesk
+              session (no extra login or permission needed) and cached
+              per ticket for 5 minutes. All HTML is sanitized.
             </p>
             <p class="sub small section-fork" id="ticketHover-fork"></p>
           </div>

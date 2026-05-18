@@ -1254,22 +1254,10 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
 
       const body = document.createElement("div");
       body.setAttribute("data-zvt-popup-body", "1");
-      const mode = settings.ticketHover?.mode || "iframe";
-      if (mode === "iframe") {
-        // Iframe mode: embed the ticket viewer itself. Body becomes a
-        // bare container; populatePopup fills it with an <iframe> that
-        // loads /agent/tickets/<id>. Padding/scroll come from inside
-        // the iframe so we don't double-scroll.
-        Object.assign(body.style, {
-          padding: "0", overflow: "hidden", flex: "1 1 auto", minHeight: "0",
-          background: theme.popupBg,
-        });
-      } else {
-        Object.assign(body.style, {
-          padding: "0", overflowY: "auto", flex: "1 1 auto", minHeight: "0",
-          display: "flex", flexDirection: "column",
-        });
-      }
+      Object.assign(body.style, {
+        padding: "0", overflowY: "auto", flex: "1 1 auto", minHeight: "0",
+        display: "flex", flexDirection: "column",
+      });
       body.innerHTML = `<div style="color:${theme.mutedFg};font-style:italic;padding:14px 16px;">Loading ticket #${escapeText(ticketId)}…</div>`;
       popup.appendChild(body);
 
@@ -1312,11 +1300,6 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     async populatePopup(popup, ticketId, theme) {
       const body = popup.querySelector('[data-zvt-popup-body]');
       if (!body) return;
-      const mode = settings.ticketHover?.mode || "iframe";
-      if (mode === "iframe") {
-        this.populateIframe(popup, body, ticketId, theme);
-        return;
-      }
       const fullConv = !!settings.ticketHover?.fullConversation;
       try {
         const [ticketRes, commentsRes] = await Promise.all([
@@ -1330,129 +1313,6 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
         body.innerHTML = `<div style="color:#d33;font-style:italic;padding:14px 16px;">Couldn't load: ${escapeText(e?.message || String(e))}</div>`;
       }
     }
-
-    /**
-     * Iframe mode — embed /agent/tickets/<id> as an iframe. This is
-     * what Lovely Views does: the popup is a slim version of the
-     * actual ticket viewer, so everything Zendesk renders on the
-     * ticket page (composer, sidebar, conversation, etc) appears in
-     * the popup without us reimplementing it.
-     *
-     * Iframe loading is async and Zendesk's SPA may take a moment to
-     * render inside the iframe. We:
-     *   - Show a loading spinner immediately.
-     *   - Listen for `load` to swap to the iframe.
-     *   - If load fires but the iframe ends up blank / frame-busted
-     *     within 6s, fall back to the summary renderer with a hint.
-     *
-     * Frame-busting detection: Zendesk doesn't ship X-Frame-Options
-     * DENY (we're same-origin, so the iframe attempt is allowed by
-     * the browser). Some Zendesk SPA versions detect iframing and
-     * navigate window.top. We protect with sandbox="allow-same-origin
-     * allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
-     * — but intentionally OMIT "allow-top-navigation" so any
-     * frame-busting attempt is a no-op.
-     */
-    populateIframe(popup, body, ticketId, theme) {
-      body.innerHTML = "";
-      const spinner = document.createElement("div");
-      spinner.style.cssText = `color:${theme.mutedFg};font-style:italic;padding:14px 16px;`;
-      spinner.textContent = `Loading ticket #${ticketId}…`;
-      body.appendChild(spinner);
-
-      const iframe = document.createElement("iframe");
-      iframe.src = `/agent/tickets/${encodeURIComponent(ticketId)}`;
-      iframe.setAttribute("sandbox", "allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals");
-      iframe.setAttribute("title", `Ticket #${ticketId} preview`);
-      iframe.setAttribute("referrerpolicy", "same-origin");
-      Object.assign(iframe.style, {
-        width: "100%", height: "100%",
-        border: "none", display: "block",
-        background: theme.popupBg,
-        visibility: "hidden",   // hide until load fires so spinner shows alone
-      });
-      body.appendChild(iframe);
-
-      let settled = false;
-      const fallbackTimer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        console.warn("[zvt-tickets] iframe took >6s to load — falling back to summary view");
-        body.removeChild(iframe);
-        spinner.remove();
-        // Re-render as summary
-        body.style.padding = "0";
-        body.style.overflowY = "auto";
-        body.style.display = "flex";
-        body.style.flexDirection = "column";
-        this.populatePopupAsSummary(popup, body, ticketId, theme);
-      }, 6000);
-
-      iframe.addEventListener("load", () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(fallbackTimer);
-        if (this.popup !== popup) return;
-        // Some sanity check: did the iframe actually mount the ticket
-        // viewer (vs e.g. a logged-out redirect)?
-        try {
-          const doc = iframe.contentDocument;
-          const docUrl = doc?.location?.href || "";
-          if (docUrl && !docUrl.includes(`/agent/tickets/${ticketId}`)) {
-            // Probably redirected to login or somewhere else. Bail.
-            console.warn("[zvt-tickets] iframe redirected to", docUrl, "— falling back");
-            this.populateIframeFallback(popup, body, ticketId, theme);
-            return;
-          }
-        } catch (e) {
-          // Cross-origin access blocked (shouldn't happen — same origin).
-          // Continue anyway; iframe likely works fine for the user.
-        }
-        spinner.remove();
-        iframe.style.visibility = "visible";
-      });
-      iframe.addEventListener("error", () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(fallbackTimer);
-        if (this.popup !== popup) return;
-        this.populateIframeFallback(popup, body, ticketId, theme);
-      });
-    }
-
-    populateIframeFallback(popup, body, ticketId, theme) {
-      // Strip the iframe + spinner.
-      body.innerHTML = "";
-      body.style.padding = "0";
-      body.style.overflowY = "auto";
-      body.style.display = "flex";
-      body.style.flexDirection = "column";
-      const note = document.createElement("div");
-      note.style.cssText = `font-size:11px;color:${theme.mutedFg};padding:6px 16px;background:${theme.subtleBg};border-bottom:1px solid ${theme.borderColor};`;
-      note.textContent = "Iframe preview failed — showing summary instead. Switch the Hover preview mode in options if you'd rather always see this view.";
-      body.appendChild(note);
-      this.populatePopupAsSummary(popup, body, ticketId, theme);
-    }
-
-    async populatePopupAsSummary(popup, body, ticketId, theme) {
-      const fullConv = !!settings.ticketHover?.fullConversation;
-      try {
-        const [ticketRes, commentsRes] = await Promise.all([
-          this.fetchTicket(ticketId),
-          fullConv ? this.fetchComments(ticketId) : Promise.resolve(null),
-        ]);
-        if (this.popup !== popup) return;
-        // Append into the existing body without clobbering the fallback note.
-        this.renderPopupContent(body, ticketRes, commentsRes, theme, /*append=*/true);
-      } catch (e) {
-        if (this.popup !== popup) return;
-        const err = document.createElement("div");
-        err.style.cssText = `color:#d33;font-style:italic;padding:14px 16px;`;
-        err.textContent = `Couldn't load: ${e?.message || String(e)}`;
-        body.appendChild(err);
-      }
-    }
-
     /**
      * Lovely-Views-inspired layout:
      *   ┌─────────────────────────────────────────────────────────────┐
@@ -1556,16 +1416,15 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       convoPane.setAttribute("data-zvt-convo-pane", "1");
       convoPane.style.cssText = "padding:12px 16px;overflow-y:auto;flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:8px;";
 
-      // Build the comment list: when we have the full conversation, use
-      // it (the API includes the description as the first comment's body
-      // automatically). When we don't, render the description by itself
-      // as the only "message".
+      // Build the comment list. Lovely Views shows newest-first so the
+      // most recent reply is what you see immediately when the popup
+      // opens. We reverse the array because the API call uses
+      // sort_order=asc (oldest first; preserves description as comment[0]).
       const allComments = [];
       if (commentsRes?.comments && Array.isArray(commentsRes.comments)) {
         for (const c of commentsRes.comments) allComments.push(c);
+        allComments.reverse();   // newest first
       } else if (t.description) {
-        // Synthesise a single comment from the description so the body
-        // has something to show without the full conversation toggle.
         allComments.push({
           author_id: t.requester_id,
           public: true,
@@ -1883,137 +1742,71 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
    * mounts new rows for the additions. Every accumulated row stays
    * fully interactive.
    */
-  const fetchAccumulator = {
-    installed: false,
+  /**
+   * Bridge to the MAIN-world page-hook (src/page-hook.js).
+   *
+   * Why this exists: content scripts in the default isolated world have
+   * their OWN window.fetch — wrapping it does not affect calls Zendesk
+   * makes from page-world code. The page-hook script runs in MAIN world
+   * at document_start, before Zendesk's React app captures fetch, so
+   * any window.fetch call by Zendesk hits our wrapper.
+   *
+   * Communication is via CustomEvent (isolated world dispatches
+   * "zvt-page-hook:command"; MAIN world dispatches "zvt-page-hook:event").
+   * We never share JS objects directly — only CloneAlgorithm-safe payloads.
+   */
+  const pageHookBridge = {
+    ready: false,
     enabled: false,
     viewId: null,
-    accumulatedRows: [],
-    knownIds: new Set(),
-    aux: {
-      users: new Map(),
-      organizations: new Map(),
-      groups: new Map(),
-    },
-    columns: null,
-    view: null,
-    onAccumulate: null,
+    onMerged: null,
+    onIntercepted: null,
   };
 
-  function installFetchHook() {
-    if (fetchAccumulator.installed) return;
-    if (typeof window.fetch !== "function") return;
-    const origFetch = window.fetch.bind(window);
-    window.fetch = async function(input, init) {
-      if (!fetchAccumulator.enabled || !fetchAccumulator.viewId) {
-        return origFetch(input, init);
-      }
-      const url = typeof input === "string" ? input : (input?.url || "");
-      // Match: /api/v2/views/<viewId>/execute(.json)?...
-      const m = url.match(/\/api\/v2\/views\/(\d+)\/execute(?:\.json)?(?:\?|$)/);
-      if (!m || m[1] !== fetchAccumulator.viewId) {
-        return origFetch(input, init);
-      }
-      console.log("[zvt-tickets] intercepted execute fetch", { url, viewId: m[1] });
-      const response = await origFetch(input, init);
-      if (!response.ok) {
-        console.log("[zvt-tickets] execute response not ok, passing through", response.status);
-        return response;
-      }
-      const ct = response.headers.get("content-type") || "";
-      if (!ct.includes("application/json")) {
-        console.log("[zvt-tickets] execute response non-JSON, passing through");
-        return response;
-      }
-      try {
-        const data = await response.clone().json();
-        return mergeExecuteResponse(data, response);
-      } catch (e) {
-        console.warn("[zvt-tickets] merge failed, passing through", e);
-        return response;
-      }
-    };
-    fetchAccumulator.installed = true;
-    console.log("[zvt-tickets] fetch hook installed");
+  function sendCommand(command, payload) {
+    window.dispatchEvent(new CustomEvent("zvt-page-hook:command", {
+      detail: { command, payload: payload || {} },
+    }));
   }
 
-  function rowTicketId(row) {
-    // ticket_id is the top-level Zendesk field; ticket.id is the nested
-    // canonical. Both are present in the probed response. Prefer the
-    // top-level which is consistently a number.
-    if (row?.ticket_id != null) return row.ticket_id;
-    if (row?.ticket?.id != null) return row.ticket.id;
-    return null;
+  // Listen for events from the MAIN-world hook.
+  window.addEventListener("zvt-page-hook:event", (e) => {
+    const detail = e.detail || {};
+    switch (detail.event) {
+      case "ready":
+        pageHookBridge.ready = true;
+        if (detail.payload?.viewId !== undefined) {
+          pageHookBridge.viewId = detail.payload.viewId;
+        }
+        break;
+      case "merged":
+        if (typeof pageHookBridge.onMerged === "function") {
+          pageHookBridge.onMerged(detail.payload || {});
+        }
+        break;
+      case "intercepted":
+        if (typeof pageHookBridge.onIntercepted === "function") {
+          pageHookBridge.onIntercepted(detail.payload || {});
+        }
+        break;
+      case "log":
+        // Forward page-hook logs into the content script's namespace so
+        // they're greppable in devtools.
+        console.log(`[zvt-page-hook] ${detail.payload?.message || ""}`);
+        break;
+    }
+  });
+
+  function configurePageHook(enabled, viewId) {
+    pageHookBridge.enabled = !!enabled;
+    pageHookBridge.viewId = viewId || null;
+    sendCommand("configure", { enabled: pageHookBridge.enabled, viewId: pageHookBridge.viewId });
   }
 
-  function mergeExecuteResponse(data, originalResponse) {
-    let added = 0;
-    if (Array.isArray(data?.rows)) {
-      for (const row of data.rows) {
-        const id = rowTicketId(row);
-        if (id == null) continue;
-        if (fetchAccumulator.knownIds.has(id)) continue;
-        fetchAccumulator.knownIds.add(id);
-        fetchAccumulator.accumulatedRows.push(row);
-        added++;
-      }
-    }
-    for (const cat of ["users", "organizations", "groups"]) {
-      if (!Array.isArray(data?.[cat])) continue;
-      const map = fetchAccumulator.aux[cat];
-      for (const item of data[cat]) {
-        if (item?.id != null) map.set(item.id, item);    // last write wins
-      }
-    }
-    if (data?.columns && Array.isArray(data.columns)) fetchAccumulator.columns = data.columns;
-    if (data?.view) fetchAccumulator.view = data.view;
-
-    // First page only — pass through unchanged.
-    const pageSize = data?.rows?.length || 0;
-    if (fetchAccumulator.accumulatedRows.length <= pageSize) {
-      return originalResponse;
-    }
-
-    // Synthesise a merged response. Keep meta/links from latest so
-    // React's pagination controls still navigate forward (our scroll
-    // handler clicks Next; without valid pagination meta, the click
-    // would be a no-op).
-    const merged = {
-      ...data,
-      rows: fetchAccumulator.accumulatedRows.slice(),
-      users:          Array.from(fetchAccumulator.aux.users.values()),
-      organizations:  Array.from(fetchAccumulator.aux.organizations.values()),
-      groups:         Array.from(fetchAccumulator.aux.groups.values()),
-      columns: fetchAccumulator.columns || data.columns,
-      view:    fetchAccumulator.view    || data.view,
-      // Bump the visible count to match what's now in rows[].
-      count: fetchAccumulator.accumulatedRows.length,
-      // Preserve meta and links so React can keep paginating.
-      meta:  data.meta  || {},
-      links: data.links || {},
-    };
-
-    if (fetchAccumulator.onAccumulate) {
-      try { fetchAccumulator.onAccumulate(added, fetchAccumulator.accumulatedRows.length); }
-      catch (e) {}
-    }
-    console.log("[zvt-tickets] returning merged response with", merged.rows.length, "rows");
-    return new Response(JSON.stringify(merged), {
-      status: originalResponse.status,
-      statusText: originalResponse.statusText,
-      headers: originalResponse.headers,
-    });
+  function resetPageHook(viewId) {
+    sendCommand("reset", { viewId: viewId || pageHookBridge.viewId });
   }
 
-  function resetAccumulator(viewId) {
-    fetchAccumulator.viewId = viewId || null;
-    fetchAccumulator.accumulatedRows = [];
-    fetchAccumulator.knownIds = new Set();
-    fetchAccumulator.aux.users.clear();
-    fetchAccumulator.aux.organizations.clear();
-    fetchAccumulator.aux.groups.clear();
-    fetchAccumulator.columns = null;
-    fetchAccumulator.view = null;
-  }
 
   class InfiniteScroll {
     constructor(table) {
@@ -2037,19 +1830,21 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       this.scrollContainer = this.findScrollContainer();
       if (!this.scrollContainer) return;
 
-      installFetchHook();
-      fetchAccumulator.enabled = true;
-      resetAccumulator(this.currentViewId);
+      configurePageHook(true, this.currentViewId);
       console.log("[zvt-tickets] InfiniteScroll attached", {
         viewId: this.currentViewId,
         scrollContainer: this.scrollContainer,
       });
-      fetchAccumulator.onAccumulate = (added, total) => {
-        console.log("[zvt-tickets] accumulator merged page", { added, total });
+      pageHookBridge.onMerged = ({ added, total }) => {
+        console.log("[zvt-tickets] page-hook merged", { added, total });
         if (this.loadingEl) {
           this.loadingEl.textContent = `Loaded ${added} more (${total} total) — scroll for more`;
           setTimeout(() => this.removeLoadingIndicator(), 1500);
         }
+      };
+      pageHookBridge.onIntercepted = (info) => {
+        // Useful for diagnosing; cheap.
+        console.log("[zvt-tickets] page-hook intercepted", info);
       };
 
       this.scrollContainer.addEventListener("scroll", this.boundScroll, { passive: true });
@@ -2061,7 +1856,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
           const newViewId = this.getViewIdFromUrl();
           if (newViewId !== this.currentViewId) {
             this.currentViewId = newViewId;
-            resetAccumulator(newViewId);
+            configurePageHook(true, newViewId);
           }
         }
       }, 1000);
@@ -2075,10 +1870,9 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       this.attached = false;
       this.removeLoadingIndicator();
       if (this.routeChecker) { clearInterval(this.routeChecker); this.routeChecker = null; }
-      // Leave the fetch hook installed (it's a singleton; cheap no-op
-      // when disabled) but turn off the enable flag so it stops merging.
-      fetchAccumulator.enabled = false;
-      fetchAccumulator.onAccumulate = null;
+      configurePageHook(false, this.currentViewId);
+      pageHookBridge.onMerged = null;
+      pageHookBridge.onIntercepted = null;
     }
     getViewIdFromUrl() {
       const m = window.location.pathname.match(/\/agent\/filters\/(\d+)/);
