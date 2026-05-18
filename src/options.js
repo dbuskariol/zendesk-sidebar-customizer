@@ -20,7 +20,7 @@ const {
   DEFAULT_PREFS, DEFAULT_HIDE, DEFAULT_DENSITY, DEFAULT_ORDER, DEFAULT_THEME,
   DEFAULT_TICKET_PREFS, DEFAULT_TICKET_DENSITY, DEFAULT_TICKET_THEME,
   DEFAULT_TICKET_HIDE, DEFAULT_TICKET_CLASSIFIERS, DEFAULT_TICKET_AUTO_REFRESH,
-  DEFAULT_TICKET_HOVER, TICKET_HOVER_RANGES,
+  DEFAULT_TICKET_HOVER, TICKET_HOVER_RANGES, TICKET_HOVER_MODES,
   DEFAULT_TICKET_PAGINATION, TICKET_PAGINATION_RANGES, PAGINATION_MODES,
   DEFAULT_BUCKET_COLORS, DEFAULT_SLA_PATTERNS, DEFAULT_GROUP_PARSERS,
   SEMANTIC_STATUS_BUCKETS, SEMANTIC_SLA_BUCKETS, SEMANTIC_PRIORITY_BUCKETS,
@@ -3203,6 +3203,9 @@ function renderTicketHover() {
   els.ticketHoverScrollComments.checked = !!h.scrollComments;
   els.ticketHoverSticky.checked = !!h.sticky;
   els.ticketHoverFullConversation.checked = !!h.fullConversation;
+  document.querySelectorAll('input[name="ticketHoverMode"]').forEach((radio) => {
+    radio.checked = (radio.value === (h.mode || "iframe"));
+  });
   els.ticketHoverGrid.innerHTML = "";
   for (const tk of TICKET_HOVER_TOKENS) {
     const value = h[tk.key];
@@ -3230,6 +3233,13 @@ function bindTicketHover() {
   });
   els.ticketHoverFullConversation.addEventListener("change", () => {
     store.update("ticketHover", { fullConversation: els.ticketHoverFullConversation.checked });
+  });
+  document.querySelectorAll('input[name="ticketHoverMode"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      if (radio.checked && TICKET_HOVER_MODES.includes(radio.value)) {
+        store.update("ticketHover", { mode: radio.value });
+      }
+    });
   });
 }
 

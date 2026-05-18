@@ -310,17 +310,24 @@
   // Lovely-style hover preview defaults (v0.9.6): wider + shorter so it
   // reads like a slim ticket viewer rather than a tall vertical popup.
   // User can override via the Hover preview options page.
+  //
+  // v0.9.7 — `mode` selects how the body is rendered:
+  //   "summary" — API-driven custom layout (metadata strip + comment list)
+  //   "iframe"  — embed /agent/tickets/<id> as an iframe (Lovely-Views style;
+  //               looks identical to the full ticket page but inside the popup)
+  const TICKET_HOVER_MODES = Object.freeze(["summary", "iframe"]);
   const DEFAULT_TICKET_HOVER = Object.freeze({
     enhanced:         false,
-    maxWidthPx:       960,
-    maxHeightVh:      65,
+    mode:             "iframe",   // Lovely-like default
+    maxWidthPx:       1100,
+    maxHeightVh:      75,
     scrollComments:   true,
     sticky:           false,
     fullConversation: false,
   });
 
   const TICKET_HOVER_RANGES = Object.freeze({
-    maxWidthPx:  { min: 360, max: 1200 },
+    maxWidthPx:  { min: 360, max: 1600 },
     maxHeightVh: { min: 30,  max: 95 },
   });
 
@@ -670,8 +677,10 @@
     const d = DEFAULT_TICKET_HOVER;
     const w = asNum(v?.maxWidthPx, TICKET_HOVER_RANGES.maxWidthPx.min, TICKET_HOVER_RANGES.maxWidthPx.max, d.maxWidthPx);
     const h = asNum(v?.maxHeightVh, TICKET_HOVER_RANGES.maxHeightVh.min, TICKET_HOVER_RANGES.maxHeightVh.max, d.maxHeightVh);
+    const mode = TICKET_HOVER_MODES.includes(v?.mode) ? v.mode : d.mode;
     return {
       enhanced:         asBool(v?.enhanced, d.enhanced),
+      mode,
       maxWidthPx:       Math.round(w),
       maxHeightVh:      Math.round(h),
       scrollComments:   asBool(v?.scrollComments, d.scrollComments),
@@ -1294,7 +1303,7 @@
     DEFAULT_ORDER, DEFAULT_THEME, DEFAULT_CUSTOM_VIEWS,
     DEFAULT_TICKET_PREFS, DEFAULT_TICKET_DENSITY, DEFAULT_TICKET_THEME,
     DEFAULT_TICKET_HIDE, DEFAULT_TICKET_CLASSIFIERS, DEFAULT_TICKET_AUTO_REFRESH,
-    DEFAULT_TICKET_HOVER, TICKET_HOVER_RANGES,
+    DEFAULT_TICKET_HOVER, TICKET_HOVER_RANGES, TICKET_HOVER_MODES,
     DEFAULT_TICKET_PAGINATION, TICKET_PAGINATION_RANGES, PAGINATION_MODES,
     RESERVED_PROFILE_ID,
     // Classes / functions
