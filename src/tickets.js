@@ -1302,10 +1302,27 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
      *   │ Open full ticket →                                          │  ← footer
      *   └─────────────────────────────────────────────────────────────┘
      *
-     * Description folds INTO the conversation as the first message
-     * (Zendesk treats the description as the body of comment[0]).
-     * Metadata is collapsed onto a single horizontal strip so the
-     * conversation gets the bulk of vertical space.
+     * Lovely-Views 2-pane layout:
+     *   ┌────────────────────────────────────────────────────────────┐
+     *   │ #1234 Subject…                            [📌 Pinned]  [✕] │  ← header
+     *   ├──────────────────┬─────────────────────────────────────────┤
+     *   │ Status:    open  │ Conversation (newest first; scrolls)   │
+     *   │ Priority:  high  │ ┌─────────────────────────────────┐    │
+     *   │ Type:      task  │ │ Author · 2h ago                 │    │
+     *   │ Requester: Acme  │ │ comment body html               │    │
+     *   │ Assignee:  Mei   │ └─────────────────────────────────┘    │
+     *   │ Org:       Acme  │ ┌─────────────────────────────────┐    │
+     *   │ Created:   3d    │ │ Author · 1d ago                 │    │
+     *   │ Updated:   1h    │ │ comment body html               │    │
+     *   │ Tags:            │ └─────────────────────────────────┘    │
+     *   │  #tag  #tag      │                                         │
+     *   ├──────────────────┴─────────────────────────────────────────┤
+     *   │ 23 comments              Open full ticket →                │  ← footer
+     *   └────────────────────────────────────────────────────────────┘
+     *
+     * Subject is in the header bar. Body is a flex ROW with two
+     * children: a fixed-width left "properties" pane and a flexible
+     * right "conversation" pane that scrolls independently.
      */
     renderPopupContent(body, ticketRes, commentsRes, theme, append = false) {
       if (!append) body.innerHTML = "";
@@ -1313,33 +1330,37 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       const users = new Map((ticketRes?.users || []).map(u => [u.id, u]));
       const orgs = new Map((ticketRes?.organizations || []).map(o => [o.id, o]));
 
-      // The body element from createPopup is already a flex column; switch
-      // its padding off so each section can manage its own.
+      // The body element from createPopup defaults to a flex column;
+      // override to a column that wraps subject + 2-pane row + footer.
       body.style.padding = "0";
       body.style.display = "flex";
       body.style.flexDirection = "column";
+      body.style.minHeight = "0";
 
-      // === Subject row (replaces the generic header subject; the
-      // popup's title bar already shows "Ticket #N") ===
+      // === Subject row ===
       const subjectRow = document.createElement("div");
-      subjectRow.style.cssText = `padding:10px 16px 4px;font-size:15px;font-weight:600;line-height:1.3;color:${theme.popupFg};`;
+      subjectRow.style.cssText = `padding:10px 16px;font-size:15px;font-weight:600;line-height:1.3;color:${theme.popupFg};border-bottom:1px solid ${theme.borderColor};flex-shrink:0;`;
       subjectRow.textContent = t.subject || "(no subject)";
       body.appendChild(subjectRow);
 
-      // === Single metadata strip ===
-      const strip = document.createElement("div");
-      strip.style.cssText = `padding:6px 16px 10px;font-size:11px;color:${theme.mutedFg};display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;border-bottom:1px solid ${theme.borderColor};`;
+      // === 2-pane row (left = properties, right = conversation) ===
+      const twoPane = document.createElement("div");
+      twoPane.style.cssText = "display:flex;flex:1 1 auto;min-height:0;overflow:hidden;";
 
-      const inlineBadge = (label, value, title) => {
+      // ---- Left pane: properties ----
+      const leftPane = document.createElement("div");
+      leftPane.style.cssText = `width:240px;flex-shrink:0;padding:12px 14px;overflow-y:auto;border-right:1px solid ${theme.borderColor};background:${theme.subtleBg};display:flex;flex-direction:column;gap:8px;`;
+
+      const propRow = (label, value, title) => {
         if (value == null || value === "") return null;
-        const wrap = document.createElement("span");
-        wrap.style.cssText = "display:inline-flex;gap:4px;align-items:baseline;";
-        const lbl = document.createElement("span");
+        const wrap = document.createElement("div");
+        wrap.style.cssText = "display:flex;flex-direction:column;gap:2px;";
+        const lbl = document.createElement("div");
         lbl.textContent = label;
-        lbl.style.cssText = `color:${theme.mutedFg};`;
-        const val = document.createElement("span");
+        lbl.style.cssText = `color:${theme.mutedFg};font-size:10px;text-transform:uppercase;letter-spacing:0.04em;font-weight:500;`;
+        const val = document.createElement("div");
         val.textContent = String(value);
-        val.style.cssText = `color:${theme.popupFg};font-weight:500;`;
+        val.style.cssText = `color:${theme.popupFg};font-size:12px;font-weight:500;word-wrap:break-word;`;
         if (title) val.title = title;
         wrap.appendChild(lbl);
         wrap.appendChild(val);
@@ -1351,55 +1372,54 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       const submitter = users.get(t.submitter_id);
       const org       = orgs.get(t.organization_id);
 
-      const items = [
-        t.status   && inlineBadge("Status",   t.status),
-        t.priority && inlineBadge("Priority", t.priority),
-        t.type     && inlineBadge("Type",     t.type),
-        requester  && inlineBadge("Requester", requester.name || `#${requester.id}`, requester.email),
-        assignee   && inlineBadge("Assignee",  assignee.name  || `#${assignee.id}`,  assignee.email),
+      const props = [
+        propRow("Status",    t.status),
+        propRow("Priority",  t.priority),
+        propRow("Type",      t.type),
+        propRow("Requester", requester?.name || (requester ? `#${requester.id}` : null), requester?.email),
+        propRow("Assignee",  assignee?.name  || (assignee  ? `#${assignee.id}`  : null), assignee?.email),
         (submitter && submitter.id !== requester?.id)
-                   && inlineBadge("Submitter", submitter.name || `#${submitter.id}`, submitter.email),
-        org        && inlineBadge("Org",      org.name),
-        t.created_at && inlineBadge("Created", formatRelative(t.created_at), new Date(t.created_at).toLocaleString()),
-        t.updated_at && inlineBadge("Updated", formatRelative(t.updated_at), new Date(t.updated_at).toLocaleString()),
+          ? propRow("Submitter", submitter.name || `#${submitter.id}`, submitter.email)
+          : null,
+        propRow("Organization", org?.name),
+        t.created_at ? propRow("Created", formatRelative(t.created_at), new Date(t.created_at).toLocaleString()) : null,
+        t.updated_at ? propRow("Updated", formatRelative(t.updated_at), new Date(t.updated_at).toLocaleString()) : null,
       ].filter(Boolean);
-      for (const it of items) strip.appendChild(it);
+      for (const p of props) leftPane.appendChild(p);
 
-      // Tags get their own visual treatment on the right side of the
-      // strip so they don't crowd the inline labels.
+      // Tags as the last block in the left pane.
       if (Array.isArray(t.tags) && t.tags.length) {
-        const sep = document.createElement("span");
-        sep.style.cssText = `width:1px;height:12px;background:${theme.borderColor};margin:0 4px;`;
-        strip.appendChild(sep);
-        for (const tag of t.tags.slice(0, 8)) {
+        const tagsBlock = document.createElement("div");
+        tagsBlock.style.cssText = "display:flex;flex-direction:column;gap:4px;";
+        const lbl = document.createElement("div");
+        lbl.textContent = "Tags";
+        lbl.style.cssText = `color:${theme.mutedFg};font-size:10px;text-transform:uppercase;letter-spacing:0.04em;font-weight:500;`;
+        tagsBlock.appendChild(lbl);
+        const tagRow = document.createElement("div");
+        tagRow.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;";
+        for (const tag of t.tags) {
           const s = document.createElement("span");
           s.textContent = tag;
           s.style.cssText = `padding:1px 8px;border-radius:8px;background:${theme.tagBg};color:${theme.tagFg};font-size:11px;`;
-          strip.appendChild(s);
+          tagRow.appendChild(s);
         }
-        if (t.tags.length > 8) {
-          const more = document.createElement("span");
-          more.textContent = `+${t.tags.length - 8} more`;
-          more.style.cssText = `font-size:11px;color:${theme.mutedFg};`;
-          more.title = t.tags.slice(8).join(", ");
-          strip.appendChild(more);
-        }
+        tagsBlock.appendChild(tagRow);
+        leftPane.appendChild(tagsBlock);
       }
-      body.appendChild(strip);
+      twoPane.appendChild(leftPane);
 
-      // === Conversation pane (main scrolling body) ===
-      const convoPane = document.createElement("div");
-      convoPane.setAttribute("data-zvt-convo-pane", "1");
-      convoPane.style.cssText = "padding:12px 16px;overflow-y:auto;flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:8px;";
+      // ---- Right pane: conversation ----
+      const rightPane = document.createElement("div");
+      rightPane.setAttribute("data-zvt-convo-pane", "1");
+      rightPane.style.cssText = "flex:1 1 auto;min-width:0;padding:12px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;";
 
       // Build the comment list. Lovely Views shows newest-first so the
-      // most recent reply is what you see immediately when the popup
-      // opens. We reverse the array because the API call uses
-      // sort_order=asc (oldest first; preserves description as comment[0]).
+      // most recent reply is what you see immediately. The API uses
+      // sort_order=asc, so we reverse here.
       const allComments = [];
       if (commentsRes?.comments && Array.isArray(commentsRes.comments)) {
         for (const c of commentsRes.comments) allComments.push(c);
-        allComments.reverse();   // newest first
+        allComments.reverse();
       } else if (t.description) {
         allComments.push({
           author_id: t.requester_id,
@@ -1410,8 +1430,6 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       }
 
       const commentUsers = new Map((commentsRes?.users || []).map(u => [u.id, u]));
-      // Make sure the commentUsers map also covers people from the
-      // ticket fetch so requester/assignee names resolve.
       for (const [id, u] of users) {
         if (!commentUsers.has(id)) commentUsers.set(id, u);
       }
@@ -1422,22 +1440,23 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
         empty.textContent = commentsRes
           ? "(no comments yet)"
           : "Enable Full conversation in the Hover preview options to see all comments.";
-        convoPane.appendChild(empty);
+        rightPane.appendChild(empty);
       } else {
-        for (const c of allComments) convoPane.appendChild(renderCommentCard(c, commentUsers, theme));
+        for (const c of allComments) rightPane.appendChild(renderCommentCard(c, commentUsers, theme));
       }
-      body.appendChild(convoPane);
+      twoPane.appendChild(rightPane);
+      body.appendChild(twoPane);
 
-      // === Footer (always visible at bottom of popup) ===
+      // === Footer ===
       const footer = document.createElement("div");
       footer.style.cssText = `padding:6px 16px 8px;border-top:1px solid ${theme.borderColor};display:flex;justify-content:space-between;align-items:center;font-size:12px;color:${theme.mutedFg};flex-shrink:0;`;
-      const left = document.createElement("span");
+      const leftFooter = document.createElement("span");
       if (commentsRes?.comments) {
-        left.textContent = `${commentsRes.comments.length} comment${commentsRes.comments.length === 1 ? "" : "s"}`;
+        leftFooter.textContent = `${commentsRes.comments.length} comment${commentsRes.comments.length === 1 ? "" : "s"}`;
       } else if (t.description) {
-        left.textContent = "Description preview only";
+        leftFooter.textContent = "Description preview only";
       }
-      footer.appendChild(left);
+      footer.appendChild(leftFooter);
       const linkA = document.createElement("a");
       linkA.href = `/agent/tickets/${t.id || ""}`;
       linkA.textContent = "Open full ticket →";
