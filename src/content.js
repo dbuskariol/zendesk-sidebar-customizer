@@ -91,6 +91,10 @@
     if (!prefs.enabled) {
       document.body && document.body.classList.remove("zvt-compact", "zvt-themed");
       removeAllSheets();
+      // v0.9.1: master kill switch must also tear down ticket-list
+      // features. The tickets module reads sidebar prefs.enabled in its
+      // own refreshSettings, so this push triggers the teardown there.
+      try { window.ZVT_TICKETS?.refreshSettings?.(); } catch (e) {}
       return;
     }
     document.body?.classList.toggle("zvt-compact", !!prefs.compact);
@@ -100,6 +104,8 @@
     if (prefs.reorderEnabled && effectiveReorderMode() === "dom" && sidebarPane) {
       applyDomReorder(sidebarPane);
     }
+    // Master switch flipped back ON — re-attach ticket features.
+    try { window.ZVT_TICKETS?.refreshSettings?.(); } catch (e) {}
   }
 
   /* ============================ rule builders ========================== */
@@ -838,9 +844,10 @@
     const changedSections = await profile.handleStorageChange(changes, area);
     if (changedSections.length) {
       applyEnabledState();
-      // If any ticket-list section changed, push fresh settings to the
-      // tickets module. Cheap no-op if no ticket section changed.
-      if (window.ZVT_TICKETS && changedSections.some(s => s.startsWith("ticket"))) {
+      // Push fresh settings to the tickets module on any ticket-section
+      // change OR any change to sidebar prefs (master switch can disable
+      // ticket features even if no ticket section itself changed).
+      if (window.ZVT_TICKETS && changedSections.some(s => s === "prefs" || s.startsWith("ticket"))) {
         try { window.ZVT_TICKETS.refreshSettings(); } catch (e) {}
       }
     }
