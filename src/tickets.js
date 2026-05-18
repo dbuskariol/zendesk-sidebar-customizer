@@ -594,7 +594,12 @@
     const prefs = settings.ticketPrefs;
     if (!prefs?.enabled) return "";
     const p = settings.ticketPagination;
-    if (!p || p.mode !== "infinite" || !p.hidePaginator) return "";
+    if (!p || p.mode !== "infinite") return "";
+    // In infinite mode we ALWAYS hide the paginator. Zendesk's internal
+    // page index is per-Next-click and isn't aware of our merged
+    // accumulator, so its "Page X of Y" label drifts immediately — e.g.
+    // accumulator has 39 tickets but Zendesk shows "Page 3 of 2".
+    // Showing a wrong label is worse than showing nothing.
     return `
 [data-test-id^="generic-table-pagination"],
 [data-garden-id^="cursor_pagination"],
@@ -1052,12 +1057,18 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     onOver(e) {
       // Mouse entered SOMETHING. Two cases:
       //   (a) The popup itself — cancel any pending close.
-      //   (b) A ticket row — show / re-target the popup.
+      //   (b) A ticket SUBJECT ANCHOR — show / re-target the popup.
+      // Hovering elsewhere in a row (status badge, assignee cell,
+      // checkbox, etc.) does NOT trigger the popup — users have asked
+      // for tighter scoping so the popup only fires from the link
+      // they're actually trying to click.
       if (this.popup && this.popup.contains(e.target)) {
         this.cancelClose();
         return;
       }
-      const row = e.target?.closest?.(TICKET_SELECTORS.dataRow);
+      const anchor = e.target?.closest?.(TICKET_SELECTORS.ticketAnchor);
+      if (!anchor) return;
+      const row = anchor.closest(TICKET_SELECTORS.dataRow);
       if (!row) return;
       // Always cancel any pending close — we're hovering something useful.
       this.cancelClose();
@@ -1076,13 +1087,13 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     onOut(e) {
       // The relatedTarget tells us where the mouse is heading next.
       const to = e.relatedTarget;
-      const leftRow = !!e.target?.closest?.(TICKET_SELECTORS.dataRow);
+      const leftAnchor = !!e.target?.closest?.(TICKET_SELECTORS.ticketAnchor);
       const leftPopup = !!(this.popup && e.target && this.popup.contains(e.target));
-      if (!leftRow && !leftPopup) return;
+      if (!leftAnchor && !leftPopup) return;
 
-      // If heading INTO the popup or INTO any ticket row (incl. the same one), keep open.
+      // If heading INTO the popup or INTO another ticket subject anchor, keep open.
       if (to && this.popup && this.popup.contains(to)) return;
-      if (to && to.closest?.(TICKET_SELECTORS.dataRow)) return;
+      if (to && to.closest?.(TICKET_SELECTORS.ticketAnchor)) return;
 
       // Otherwise the mouse genuinely left the hover region.
       // Cancel a debounced show (the popup hasn't appeared yet).
@@ -1889,6 +1900,19 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       });
       pageHookBridge.onMerged = ({ added, total }) => {
         console.log("[zvt-tickets] page-hook merged", { added, total });
+        // Verify React actually rendered all merged rows. We do this on
+        // a delay so React's reconciler has time to commit + flush.
+        // If renderedDataRows < total, React is dropping rows from our
+        // merged response (e.g. virtualization, keying conflict).
+        setTimeout(() => {
+          const tbody = document.querySelector(TICKET_SELECTORS.tbody);
+          const rendered = tbody?.querySelectorAll(TICKET_SELECTORS.dataRow).length || 0;
+          const tbodyAll = tbody?.querySelectorAll("tr").length || 0;
+          const ok = rendered >= total;
+          console.log("[zvt-tickets] post-merge DOM check", {
+            ok, mergedTotal: total, renderedDataRows: rendered, tbodyAllRows: tbodyAll,
+          });
+        }, 300);
         if (this.loadingEl) {
           this.loadingEl.textContent = `${total} tickets loaded - scroll for more`;
           setTimeout(() => this.removeLoadingIndicator(), 1500);
