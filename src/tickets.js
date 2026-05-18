@@ -1314,129 +1314,160 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       }
     }
 
+    /**
+     * Lovely-Views-inspired layout:
+     *   ┌─────────────────────────────────────────────────────────────┐
+     *   │ #1234 Subject…                              [open] [📌] [✕] │  ← header
+     *   ├─────────────────────────────────────────────────────────────┤
+     *   │ Requester · Assignee · Org · Created · Updated · #tag #tag  │  ← strip
+     *   ├─────────────────────────────────────────────────────────────┤
+     *   │ Conversation (scrolling, fills remaining height)            │  ← body
+     *   │                                                             │
+     *   ├─────────────────────────────────────────────────────────────┤
+     *   │ Open full ticket →                                          │  ← footer
+     *   └─────────────────────────────────────────────────────────────┘
+     *
+     * Description folds INTO the conversation as the first message
+     * (Zendesk treats the description as the body of comment[0]).
+     * Metadata is collapsed onto a single horizontal strip so the
+     * conversation gets the bulk of vertical space.
+     */
     renderPopupContent(body, ticketRes, commentsRes, theme) {
       body.innerHTML = "";
       const t = ticketRes?.ticket || {};
       const users = new Map((ticketRes?.users || []).map(u => [u.id, u]));
       const orgs = new Map((ticketRes?.organizations || []).map(o => [o.id, o]));
 
-      // Subject
-      const subjEl = document.createElement("div");
-      subjEl.style.cssText = `font-size:15px;font-weight:600;margin-bottom:8px;color:${theme.popupFg};line-height:1.3;`;
-      subjEl.textContent = t.subject || "(no subject)";
-      body.appendChild(subjEl);
+      // The body element from createPopup is already a flex column; switch
+      // its padding off so each section can manage its own.
+      body.style.padding = "0";
+      body.style.display = "flex";
+      body.style.flexDirection = "column";
 
-      // Metadata badges
-      const metaRow = document.createElement("div");
-      metaRow.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;font-size:11px;margin-bottom:12px;";
-      const badge = (label) => {
-        const s = document.createElement("span");
-        s.textContent = label;
-        s.style.cssText = `padding:2px 8px;border-radius:10px;background:${theme.subtleBg};color:${theme.popupFg};`;
-        return s;
-      };
-      if (t.status)   metaRow.appendChild(badge(`Status: ${t.status}`));
-      if (t.priority) metaRow.appendChild(badge(`Priority: ${t.priority}`));
-      if (t.type)     metaRow.appendChild(badge(`Type: ${t.type}`));
-      if (t.created_at) {
-        const ts = badge(`Created ${formatRelative(t.created_at)}`);
-        ts.title = new Date(t.created_at).toLocaleString();
-        metaRow.appendChild(ts);
-      }
-      if (t.updated_at) {
-        const ts = badge(`Updated ${formatRelative(t.updated_at)}`);
-        ts.title = new Date(t.updated_at).toLocaleString();
-        metaRow.appendChild(ts);
-      }
-      body.appendChild(metaRow);
+      // === Subject row (replaces the generic header subject; the
+      // popup's title bar already shows "Ticket #N") ===
+      const subjectRow = document.createElement("div");
+      subjectRow.style.cssText = `padding:10px 16px 4px;font-size:15px;font-weight:600;line-height:1.3;color:${theme.popupFg};`;
+      subjectRow.textContent = t.subject || "(no subject)";
+      body.appendChild(subjectRow);
 
-      // People
-      const peopleRow = document.createElement("div");
-      peopleRow.style.cssText = `display:flex;gap:14px;font-size:11px;color:${theme.mutedFg};margin-bottom:12px;flex-wrap:wrap;`;
-      const person = (label, user) => {
-        if (!user) return null;
-        const wrap = document.createElement("div");
-        const lbl = document.createElement("div");
-        lbl.style.cssText = `color:${theme.mutedFg};font-size:10px;text-transform:uppercase;letter-spacing:0.04em;`;
+      // === Single metadata strip ===
+      const strip = document.createElement("div");
+      strip.style.cssText = `padding:6px 16px 10px;font-size:11px;color:${theme.mutedFg};display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;border-bottom:1px solid ${theme.borderColor};`;
+
+      const inlineBadge = (label, value, title) => {
+        if (value == null || value === "") return null;
+        const wrap = document.createElement("span");
+        wrap.style.cssText = "display:inline-flex;gap:4px;align-items:baseline;";
+        const lbl = document.createElement("span");
         lbl.textContent = label;
-        const val = document.createElement("div");
-        val.style.cssText = `color:${theme.popupFg};font-weight:500;font-size:12px;`;
-        val.textContent = user.name || `User #${user.id}`;
-        if (user.email) val.title = user.email;
+        lbl.style.cssText = `color:${theme.mutedFg};`;
+        const val = document.createElement("span");
+        val.textContent = String(value);
+        val.style.cssText = `color:${theme.popupFg};font-weight:500;`;
+        if (title) val.title = title;
         wrap.appendChild(lbl);
         wrap.appendChild(val);
         return wrap;
       };
+
       const requester = users.get(t.requester_id);
       const assignee  = users.get(t.assignee_id);
       const submitter = users.get(t.submitter_id);
       const org       = orgs.get(t.organization_id);
-      const reqEl = person("Requester", requester); if (reqEl) peopleRow.appendChild(reqEl);
-      const asgEl = person("Assignee", assignee);   if (asgEl) peopleRow.appendChild(asgEl);
-      if (submitter && submitter.id !== requester?.id) {
-        const subEl = person("Submitter", submitter); if (subEl) peopleRow.appendChild(subEl);
-      }
-      if (org) {
-        const wrap = document.createElement("div");
-        wrap.innerHTML = `<div style="color:${theme.mutedFg};font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">Organization</div>
-                          <div style="color:${theme.popupFg};font-weight:500;font-size:12px;">${escapeText(org.name)}</div>`;
-        peopleRow.appendChild(wrap);
-      }
-      if (peopleRow.children.length) body.appendChild(peopleRow);
 
-      // Description
-      if (t.description) {
-        const heading = document.createElement("div");
-        heading.style.cssText = `font-size:11px;color:${theme.mutedFg};text-transform:uppercase;letter-spacing:0.04em;margin:8px 0 6px;`;
-        heading.textContent = "Description";
-        body.appendChild(heading);
-        const descEl = document.createElement("div");
-        descEl.style.cssText = `padding:8px 10px;background:${theme.subtleBg};border-radius:6px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word;color:${theme.popupFg};margin-bottom:12px;`;
-        descEl.textContent = t.description;
-        body.appendChild(descEl);
-      }
+      const items = [
+        t.status   && inlineBadge("Status",   t.status),
+        t.priority && inlineBadge("Priority", t.priority),
+        t.type     && inlineBadge("Type",     t.type),
+        requester  && inlineBadge("Requester", requester.name || `#${requester.id}`, requester.email),
+        assignee   && inlineBadge("Assignee",  assignee.name  || `#${assignee.id}`,  assignee.email),
+        (submitter && submitter.id !== requester?.id)
+                   && inlineBadge("Submitter", submitter.name || `#${submitter.id}`, submitter.email),
+        org        && inlineBadge("Org",      org.name),
+        t.created_at && inlineBadge("Created", formatRelative(t.created_at), new Date(t.created_at).toLocaleString()),
+        t.updated_at && inlineBadge("Updated", formatRelative(t.updated_at), new Date(t.updated_at).toLocaleString()),
+      ].filter(Boolean);
+      for (const it of items) strip.appendChild(it);
 
-      // Tags
+      // Tags get their own visual treatment on the right side of the
+      // strip so they don't crowd the inline labels.
       if (Array.isArray(t.tags) && t.tags.length) {
-        const tagRow = document.createElement("div");
-        tagRow.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;";
-        for (const tag of t.tags) {
+        const sep = document.createElement("span");
+        sep.style.cssText = `width:1px;height:12px;background:${theme.borderColor};margin:0 4px;`;
+        strip.appendChild(sep);
+        for (const tag of t.tags.slice(0, 8)) {
           const s = document.createElement("span");
           s.textContent = tag;
           s.style.cssText = `padding:1px 8px;border-radius:8px;background:${theme.tagBg};color:${theme.tagFg};font-size:11px;`;
-          tagRow.appendChild(s);
+          strip.appendChild(s);
         }
-        body.appendChild(tagRow);
-      }
-
-      // Conversation
-      if (commentsRes) {
-        const heading = document.createElement("div");
-        heading.style.cssText = `font-size:11px;color:${theme.mutedFg};text-transform:uppercase;letter-spacing:0.04em;margin:8px 0 6px;display:flex;gap:8px;align-items:center;`;
-        const comments = commentsRes?.comments || [];
-        const commentUsers = new Map((commentsRes?.users || []).map(u => [u.id, u]));
-        heading.innerHTML = `<span>Conversation</span><span style="text-transform:none;letter-spacing:normal;color:${theme.mutedFg};opacity:0.8;font-weight:400;">${comments.length} comment${comments.length === 1 ? "" : "s"}</span>`;
-        body.appendChild(heading);
-        if (!comments.length) {
-          const empty = document.createElement("div");
-          empty.style.cssText = `color:${theme.mutedFg};font-style:italic;font-size:12px;`;
-          empty.textContent = "(no comments yet)";
-          body.appendChild(empty);
-        } else {
-          const list = document.createElement("div");
-          list.style.cssText = "display:flex;flex-direction:column;gap:8px;";
-          for (const c of comments) list.appendChild(renderCommentCard(c, commentUsers, theme));
-          body.appendChild(list);
+        if (t.tags.length > 8) {
+          const more = document.createElement("span");
+          more.textContent = `+${t.tags.length - 8} more`;
+          more.style.cssText = `font-size:11px;color:${theme.mutedFg};`;
+          more.title = t.tags.slice(8).join(", ");
+          strip.appendChild(more);
         }
       }
+      body.appendChild(strip);
 
-      // Footer
+      // === Conversation pane (main scrolling body) ===
+      const convoPane = document.createElement("div");
+      convoPane.setAttribute("data-zvt-convo-pane", "1");
+      convoPane.style.cssText = "padding:12px 16px;overflow-y:auto;flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:8px;";
+
+      // Build the comment list: when we have the full conversation, use
+      // it (the API includes the description as the first comment's body
+      // automatically). When we don't, render the description by itself
+      // as the only "message".
+      const allComments = [];
+      if (commentsRes?.comments && Array.isArray(commentsRes.comments)) {
+        for (const c of commentsRes.comments) allComments.push(c);
+      } else if (t.description) {
+        // Synthesise a single comment from the description so the body
+        // has something to show without the full conversation toggle.
+        allComments.push({
+          author_id: t.requester_id,
+          public: true,
+          created_at: t.created_at,
+          body: t.description,
+        });
+      }
+
+      const commentUsers = new Map((commentsRes?.users || []).map(u => [u.id, u]));
+      // Make sure the commentUsers map also covers people from the
+      // ticket fetch so requester/assignee names resolve.
+      for (const [id, u] of users) {
+        if (!commentUsers.has(id)) commentUsers.set(id, u);
+      }
+
+      if (!allComments.length) {
+        const empty = document.createElement("div");
+        empty.style.cssText = `color:${theme.mutedFg};font-style:italic;font-size:12px;padding:8px 0;`;
+        empty.textContent = commentsRes
+          ? "(no comments yet)"
+          : "Enable Full conversation in the Hover preview options to see all comments.";
+        convoPane.appendChild(empty);
+      } else {
+        for (const c of allComments) convoPane.appendChild(renderCommentCard(c, commentUsers, theme));
+      }
+      body.appendChild(convoPane);
+
+      // === Footer (always visible at bottom of popup) ===
       const footer = document.createElement("div");
-      footer.style.cssText = `margin-top:12px;padding-top:8px;border-top:1px solid ${theme.borderColor};text-align:right;`;
+      footer.style.cssText = `padding:6px 16px 8px;border-top:1px solid ${theme.borderColor};display:flex;justify-content:space-between;align-items:center;font-size:12px;color:${theme.mutedFg};flex-shrink:0;`;
+      const left = document.createElement("span");
+      if (commentsRes?.comments) {
+        left.textContent = `${commentsRes.comments.length} comment${commentsRes.comments.length === 1 ? "" : "s"}`;
+      } else if (t.description) {
+        left.textContent = "Description preview only";
+      }
+      footer.appendChild(left);
       const linkA = document.createElement("a");
       linkA.href = `/agent/tickets/${t.id || ""}`;
       linkA.textContent = "Open full ticket →";
-      linkA.style.cssText = `color:${theme.linkColor};text-decoration:none;font-size:12px;`;
+      linkA.style.cssText = `color:${theme.linkColor};text-decoration:none;font-weight:500;`;
       footer.appendChild(linkA);
       body.appendChild(footer);
     }
@@ -1667,21 +1698,66 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
    *     numbers (we hide them via CSS when hidePaginator is on).
    */
 
-  // Single global fetch hook — installed lazily, persists for the page
-  // lifetime. State is in a singleton so the hook closure references
-  // current state rather than a snapshot.
+  /* ===================== Pagination accumulator ===================== */
+  /*
+   * Zendesk fetches view tickets via two endpoints (probed live):
+   *
+   *   1. GET /api/v2/views/<viewId>/execute.json?page[size]=N&...
+   *        Response: { rows: [...], columns: [...], view: {...},
+   *                    users: [...], organizations: [...],
+   *                    meta: { has_more, after_cursor, before_cursor,
+   *                            last_cursor },
+   *                    links: { prev, next, last },
+   *                    count: N }
+   *        Each row contains the ticket display data, including
+   *        custom_fields, subject, assignee_id, organization_id,
+   *        ticket_id, created, priority, support_type, plus the nested
+   *        `ticket` object.
+   *
+   *   2. GET /api/v2/views/hydrate.json?filter[ids]=<comma-separated>&
+   *        include=sla_next_breach_at,fields_metadata,last_comment
+   *        Response: { tickets: [{ id, sla_policy_metric, last_comment }],
+   *                    users: [...], next_page: null,
+   *                    previous_page: null, count: N }
+   *        Hydration is a follow-up that augments specific rows with
+   *        SLA breach data and last-comment summaries. The execute call
+   *        intentionally EXCLUDES these because they're expensive.
+   *
+   * Accumulation strategy:
+   *   - For execute.json: accumulate `rows[]` keyed by row.ticket_id /
+   *     row.ticket.id, plus `users[]`/`organizations[]` by id.
+   *     Return a synthesised response that contains all accumulated
+   *     rows. Keep `columns`/`view` from the latest response (those
+   *     don't change between pages). Keep `meta`/`links` from the
+   *     latest so React's pagination controls still navigate forward,
+   *     but bump `count` so the rendered count reflects what's visible.
+   *   - For hydrate.json: pass through unmodified. The hydration data
+   *     attaches to existing tickets by ID — Zendesk's React reconciler
+   *     will hydrate every ticket whose ID matches, even rows we
+   *     accumulated from a previous page. No-op for our accumulator.
+   *
+   * Why this works: Zendesk's React reconciler keys table rows by
+   * row.ticket_id. When we return a merged rows[] containing all
+   * tickets seen so far, React diffs against the previous render,
+   * keeps the existing row DOM nodes for unchanged IDs (preserving
+   * checkbox state, hover handlers, SPA navigation handlers), and
+   * mounts new rows for the additions. Every accumulated row stays
+   * fully interactive.
+   */
   const fetchAccumulator = {
     installed: false,
     enabled: false,
     viewId: null,
-    accumulatedTickets: [],
+    accumulatedRows: [],
     knownIds: new Set(),
-    aux: {                    // accumulated user/group/org data
+    aux: {
       users: new Map(),
-      groups: new Map(),
       organizations: new Map(),
+      groups: new Map(),
     },
-    onAccumulate: null,       // callback when new page merged (for indicator)
+    columns: null,
+    view: null,
+    onAccumulate: null,
   };
 
   function installFetchHook() {
@@ -1693,66 +1769,83 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
         return origFetch(input, init);
       }
       const url = typeof input === "string" ? input : (input?.url || "");
-      const m = url.match(/\/api\/v2\/views\/(\d+)\/tickets(?:\.json)?/);
+      // Match: /api/v2/views/<viewId>/execute(.json)?...
+      const m = url.match(/\/api\/v2\/views\/(\d+)\/execute(?:\.json)?(?:\?|$)/);
       if (!m || m[1] !== fetchAccumulator.viewId) {
         return origFetch(input, init);
       }
-      // It's a view-tickets fetch for the current view. Pass through and
-      // merge the response into our accumulator.
       const response = await origFetch(input, init);
       if (!response.ok) return response;
       const ct = response.headers.get("content-type") || "";
       if (!ct.includes("application/json")) return response;
-
       try {
         const data = await response.clone().json();
-        return mergeIntoAccumulator(data, response);
+        return mergeExecuteResponse(data, response);
       } catch (e) {
-        return response;   // give up on this response, no harm
+        return response;   // best-effort — never break the page
       }
     };
     fetchAccumulator.installed = true;
   }
 
-  function mergeIntoAccumulator(data, originalResponse) {
+  function rowTicketId(row) {
+    // ticket_id is the top-level Zendesk field; ticket.id is the nested
+    // canonical. Both are present in the probed response. Prefer the
+    // top-level which is consistently a number.
+    if (row?.ticket_id != null) return row.ticket_id;
+    if (row?.ticket?.id != null) return row.ticket.id;
+    return null;
+  }
+
+  function mergeExecuteResponse(data, originalResponse) {
     let added = 0;
-    if (Array.isArray(data?.tickets)) {
-      for (const t of data.tickets) {
-        if (!t || t.id == null) continue;
-        if (fetchAccumulator.knownIds.has(t.id)) continue;
-        fetchAccumulator.knownIds.add(t.id);
-        fetchAccumulator.accumulatedTickets.push(t);
+    if (Array.isArray(data?.rows)) {
+      for (const row of data.rows) {
+        const id = rowTicketId(row);
+        if (id == null) continue;
+        if (fetchAccumulator.knownIds.has(id)) continue;
+        fetchAccumulator.knownIds.add(id);
+        fetchAccumulator.accumulatedRows.push(row);
         added++;
       }
     }
-    // Aux: users/groups/organizations are de-duped by ID.
-    for (const cat of ["users", "groups", "organizations"]) {
+    for (const cat of ["users", "organizations", "groups"]) {
       if (!Array.isArray(data?.[cat])) continue;
       const map = fetchAccumulator.aux[cat];
       for (const item of data[cat]) {
-        if (item?.id != null && !map.has(item.id)) map.set(item.id, item);
+        if (item?.id != null) map.set(item.id, item);    // last write wins
       }
     }
+    if (data?.columns && Array.isArray(data.columns)) fetchAccumulator.columns = data.columns;
+    if (data?.view) fetchAccumulator.view = data.view;
 
-    // If we have multiple pages accumulated, return the merged set so
-    // React renders everything. On the very first fetch (one page in
-    // the accumulator), return original to avoid unnecessary mutation.
-    if (fetchAccumulator.accumulatedTickets.length <= (data?.tickets?.length || 0)) {
+    // First page only — pass through unchanged.
+    const pageSize = data?.rows?.length || 0;
+    if (fetchAccumulator.accumulatedRows.length <= pageSize) {
       return originalResponse;
     }
 
+    // Synthesise a merged response. Keep meta/links from latest so
+    // React's pagination controls still navigate forward (our scroll
+    // handler clicks Next; without valid pagination meta, the click
+    // would be a no-op).
     const merged = {
       ...data,
-      tickets: fetchAccumulator.accumulatedTickets.slice(),
+      rows: fetchAccumulator.accumulatedRows.slice(),
       users:          Array.from(fetchAccumulator.aux.users.values()),
-      groups:         Array.from(fetchAccumulator.aux.groups.values()),
       organizations:  Array.from(fetchAccumulator.aux.organizations.values()),
-      // Keep the original pagination metadata so React can still
-      // navigate (we hide the UI via CSS anyway, but next/prev links
-      // need to remain valid for our auto-click strategy).
+      groups:         Array.from(fetchAccumulator.aux.groups.values()),
+      columns: fetchAccumulator.columns || data.columns,
+      view:    fetchAccumulator.view    || data.view,
+      // Bump the visible count to match what's now in rows[].
+      count: fetchAccumulator.accumulatedRows.length,
+      // Preserve meta and links so React can keep paginating.
+      meta:  data.meta  || {},
+      links: data.links || {},
     };
+
     if (fetchAccumulator.onAccumulate) {
-      try { fetchAccumulator.onAccumulate(added, fetchAccumulator.accumulatedTickets.length); }
+      try { fetchAccumulator.onAccumulate(added, fetchAccumulator.accumulatedRows.length); }
       catch (e) {}
     }
     return new Response(JSON.stringify(merged), {
@@ -1764,11 +1857,13 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
 
   function resetAccumulator(viewId) {
     fetchAccumulator.viewId = viewId || null;
-    fetchAccumulator.accumulatedTickets = [];
+    fetchAccumulator.accumulatedRows = [];
     fetchAccumulator.knownIds = new Set();
     fetchAccumulator.aux.users.clear();
-    fetchAccumulator.aux.groups.clear();
     fetchAccumulator.aux.organizations.clear();
+    fetchAccumulator.aux.groups.clear();
+    fetchAccumulator.columns = null;
+    fetchAccumulator.view = null;
   }
 
   class InfiniteScroll {

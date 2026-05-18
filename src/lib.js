@@ -307,13 +307,16 @@
   // you click outside) + full conversation (fetches ALL comments from
   // /api/v2/tickets/<id>/comments and renders them below the existing
   // Zendesk-shown few).
+  // Lovely-style hover preview defaults (v0.9.6): wider + shorter so it
+  // reads like a slim ticket viewer rather than a tall vertical popup.
+  // User can override via the Hover preview options page.
   const DEFAULT_TICKET_HOVER = Object.freeze({
     enhanced:         false,
-    maxWidthPx:       720,
-    maxHeightVh:      80,
+    maxWidthPx:       960,
+    maxHeightVh:      65,
     scrollComments:   true,
-    sticky:           false,   // clone the tooltip on appear, persist until dismissed
-    fullConversation: false,   // append all comments via the Zendesk REST API
+    sticky:           false,
+    fullConversation: false,
   });
 
   const TICKET_HOVER_RANGES = Object.freeze({
