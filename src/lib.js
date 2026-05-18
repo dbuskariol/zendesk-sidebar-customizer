@@ -58,11 +58,15 @@
   // The set of Zendesk-canonical test-ids that identify a column the same
   // way across every tenant. Anything in this set can be used as a column
   // key in user settings AND survives a different tenant/view layout.
+  //
   // Custom-field columns are NOT canonical (suffix is tenant-scoped).
+  // empty-cell and overflow-menu-cell are NOT canonical either — they
+  // are shared by multiple distinct columns in the same table (Agent
+  // collision, Group privacy, the row's overflow menu trigger). They
+  // live in AMBIGUOUS_TICKET_TEST_IDS so each gets its own
+  // label-compounded key.
   const CANONICAL_TICKET_TEST_IDS = Object.freeze(new Set([
     "generic-table-cells-selectable",
-    "generic-table-cells-empty-cell",
-    "generic-table-cells-overflow-menu-cell",
     "ticket-table-cells-status",
     "ticket-table-cells-sla",
     "ticket-table-cells-subject",
@@ -71,22 +75,35 @@
   ]));
 
   // Generic test-ids that can identify MULTIPLE distinct columns in the
-  // same table (a date column can be Requested OR Updated OR Solved OR
-  // Due). When we see one, we compound the key with the visible header
-  // label so distinct columns don't collide.
+  // same table. When we see one, we compound the key with the visible
+  // header label so distinct columns don't collide.
+  // - "date" appears on Requested, Updated, Solved, Due, etc.
+  // - "empty-cell" is Zendesk's shared test-id for header chrome
+  //   (Agent collision, Group privacy, the small icon-only spacer columns).
+  // - "overflow-menu-cell" is the per-row overflow menu trigger, sometimes
+  //   shared across multiple tables on the same page.
   const AMBIGUOUS_TICKET_TEST_IDS = Object.freeze(new Set([
     "generic-table-cells-date",
+    "generic-table-cells-empty-cell",
+    "generic-table-cells-overflow-menu-cell",
   ]));
 
   // Markers that distinguish a real ticket table from any other Garden
   // table that happens to share `tbody[data-garden-id="tables.body"]`.
-  // We require at least one of these in the rendered table before
-  // applying any ticket-list customization.
-  const TICKET_TABLE_VALIDATORS = Object.freeze([
-    "ticket-table-cells-subject",
+  // We require a `subject` column (it's the canonical "this is a list of
+  // tickets" signal) PLUS at least one of status / sla / assignee. A
+  // single marker is too weak — sidebar widgets, recently-viewed lists,
+  // and partial render frames can match one marker each.
+  const TICKET_TABLE_REQUIRED_MARKER = "ticket-table-cells-subject";
+  const TICKET_TABLE_SECONDARY_MARKERS = Object.freeze([
     "ticket-table-cells-status",
     "ticket-table-cells-sla",
     "ticket-table-cells-assignee",
+  ]);
+  // Kept for backwards compat with anything importing the old constant.
+  const TICKET_TABLE_VALIDATORS = Object.freeze([
+    TICKET_TABLE_REQUIRED_MARKER,
+    ...TICKET_TABLE_SECONDARY_MARKERS,
   ]);
 
   const PREFIXES = Object.freeze({
@@ -1047,11 +1064,16 @@
 
   // Validates a `tbody[data-garden-id="tables.body"]` is in fact a ticket
   // table. Garden tables are reused for non-ticket lists (integrations,
-  // organizations, etc) so the bare tbody is not sufficient.
+  // organizations, etc) AND for hidden render frames / sidebar widgets.
+  // We require the canonical SUBJECT column AND at least one of
+  // status/sla/assignee — two markers means it's unambiguously a ticket
+  // queue rather than a generic Garden table that happens to mention a
+  // ticket once.
   function isTicketTable(tbody) {
     if (!tbody || tbody.tagName !== "TBODY") return false;
     if (tbody.dataset?.gardenId !== "tables.body") return false;
-    for (const id of TICKET_TABLE_VALIDATORS) {
+    if (!tbody.querySelector(`[data-test-id="${TICKET_TABLE_REQUIRED_MARKER}"]`)) return false;
+    for (const id of TICKET_TABLE_SECONDARY_MARKERS) {
       if (tbody.querySelector(`[data-test-id="${id}"]`)) return true;
     }
     return false;

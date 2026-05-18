@@ -32,26 +32,29 @@
 
     <div class="layout">
       <nav class="sidenav" id="sidenav" aria-label="Section navigation">
-        <a href="#sec-general"   data-section="general">General</a>
-        <a href="#sec-density"   data-section="density">Density</a>
-        <a href="#sec-theme"     data-section="theme">Theme</a>
-        <a href="#sec-hide"      data-section="hide">Hide</a>
-        <a href="#sec-customize" data-section="customize">Customize views</a>
-        <a href="#sec-reorder"   data-section="reorder">Reorder</a>
-        <a href="#sec-tickets"   data-section="tickets" class="sidenav-section">Ticket list</a>
+        <span class="sidenav-group-header">Sidebar</span>
+        <a href="#sec-general"   data-section="general" class="sidenav-sub">— General</a>
+        <a href="#sec-density"   data-section="density" class="sidenav-sub">— Density</a>
+        <a href="#sec-theme"     data-section="theme"   class="sidenav-sub">— Theme</a>
+        <a href="#sec-hide"      data-section="hide"    class="sidenav-sub">— Hide</a>
+        <a href="#sec-customize" data-section="customize" class="sidenav-sub">— Customize views</a>
+        <a href="#sec-reorder"   data-section="reorder" class="sidenav-sub">— Reorder</a>
+        <span class="sidenav-group-header">Ticket list</span>
+        <a href="#sec-tickets"        data-section="tickets"        class="sidenav-sub">— General</a>
         <a href="#sec-ticket-density" data-section="ticket-density" class="sidenav-sub">— Density</a>
         <a href="#sec-ticket-columns" data-section="ticket-columns" class="sidenav-sub">— Columns</a>
         <a href="#sec-ticket-colors"  data-section="ticket-colors"  class="sidenav-sub">— Colors</a>
         <a href="#sec-ticket-autorefresh" data-section="ticket-autorefresh" class="sidenav-sub">— Auto-refresh</a>
         <a href="#sec-ticket-theme"   data-section="ticket-theme"   class="sidenav-sub">— Theme</a>
-        <a href="#sec-templates" data-section="templates">Templates</a>
-        <a href="#sec-backup"    data-section="backup">Backup</a>
+        <span class="sidenav-group-header">Other</span>
+        <a href="#sec-templates" data-section="templates" class="sidenav-sub">— Templates</a>
+        <a href="#sec-backup"    data-section="backup"    class="sidenav-sub">— Backup</a>
       </nav>
 
       <main class="content">
         <!-- General -->
         <section class="card" id="sec-general">
-          <h2>General</h2>
+          <h2>Sidebar — General</h2>
           <div class="card-body">
             <label class="toggle"><input type="checkbox" id="enabled" /> <span>Extension enabled</span></label>
             <label class="toggle"><input type="checkbox" id="compact" /> <span>Compact mode (apply density tokens)</span></label>
@@ -71,7 +74,7 @@
 
         <!-- Density -->
         <section class="card" id="sec-density">
-          <h2>Density</h2>
+          <h2>Sidebar — Density</h2>
           <div class="card-body">
             <p class="sub">
               Per-level spacing. Drag a slider to preview live in any open Zendesk tab on this tenant — values persist when you release.
@@ -95,7 +98,7 @@
 
         <!-- Theme -->
         <section class="card" id="sec-theme">
-          <h2>Theme</h2>
+          <h2>Sidebar — Theme</h2>
           <div class="card-body">
             <p class="sub">Color overrides for the views sidebar. Active when <strong>Theme overrides</strong> is on in General.</p>
             <h3 class="subhead">Palette</h3>
@@ -108,7 +111,7 @@
 
         <!-- Hide -->
         <section class="card" id="sec-hide">
-          <h2>Hide views &amp; groups</h2>
+          <h2>Sidebar — Hide views &amp; groups</h2>
           <div class="card-body">
             <div id="hide-catalog-banner" class="catalog-banner" hidden></div>
             <p class="sub">Uncheck a leaf to hide just that view. Uncheck a group to hide its entire subtree.</p>
@@ -141,7 +144,7 @@
 
         <!-- Customize -->
         <section class="card" id="sec-customize">
-          <h2>Customize views</h2>
+          <h2>Sidebar — Customize views</h2>
           <div class="card-body">
             <div id="customize-catalog-banner" class="catalog-banner" hidden></div>
             <p class="sub">
@@ -160,7 +163,7 @@
 
         <!-- Reorder -->
         <section class="card" id="sec-reorder">
-          <h2>Reorder</h2>
+          <h2>Sidebar — Reorder</h2>
           <div class="card-body">
             <div id="reorder-catalog-banner" class="catalog-banner" hidden></div>
             <p class="sub">
@@ -186,7 +189,7 @@
 
         <!-- Ticket-list intro -->
         <section class="card" id="sec-tickets">
-          <h2>Ticket list <span class="badge-new">v0.9</span></h2>
+          <h2>Ticket list — General <span class="badge-new">v0.9</span></h2>
           <div class="card-body">
             <p class="sub">
               Customize the Zendesk ticket-list table (the page at
@@ -209,7 +212,7 @@
 
         <!-- Ticket density -->
         <section class="card" id="sec-ticket-density">
-          <h2>Ticket density</h2>
+          <h2>Ticket list — Density</h2>
           <div class="card-body">
             <p class="sub">
               Spacing tokens for the ticket-list table. Active when
@@ -230,7 +233,7 @@
 
         <!-- Ticket columns (hide list) -->
         <section class="card" id="sec-ticket-columns">
-          <h2>Ticket columns</h2>
+          <h2>Ticket list — Columns</h2>
           <div class="card-body">
             <p class="sub">
               Columns discovered on this tenant. Uncheck to hide a column
@@ -254,7 +257,7 @@
 
         <!-- Ticket colors (classifiers) -->
         <section class="card" id="sec-ticket-colors">
-          <h2>Ticket colors</h2>
+          <h2>Ticket list — Colors</h2>
           <div class="card-body">
             <p class="sub">
               Row coloring rules. Status and priority values are
@@ -301,7 +304,7 @@
 
         <!-- Auto-refresh -->
         <section class="card" id="sec-ticket-autorefresh">
-          <h2>Auto-refresh</h2>
+          <h2>Ticket list — Auto-refresh</h2>
           <div class="card-body">
             <p class="sub">
               Periodically click Zendesk's own refresh button. Pauses
@@ -329,7 +332,7 @@
 
         <!-- Ticket theme -->
         <section class="card" id="sec-ticket-theme">
-          <h2>Ticket theme</h2>
+          <h2>Ticket list — Theme</h2>
           <div class="card-body">
             <p class="sub">Color overrides for the ticket-list table. Active when <strong>Theme overrides</strong> is on at the top.</p>
             <div id="ticket-theme-grid" class="theme-grid"></div>

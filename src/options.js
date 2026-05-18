@@ -257,16 +257,14 @@ const BUILTIN_TEMPLATES = [
   },
   {
     id: "builtin-sla-war-room",
-    name: "SLA war room (preview)",
-    description: "Bold SLA-breach highlighting + 15s refresh. Opens a column preview before hiding anything (does NOT auto-hide custom fields without your confirmation).",
+    name: "SLA war room",
+    description: "Bold breached/at-risk highlighting + 15s auto-refresh + compact density. Does NOT touch your column hide list — manage columns yourself in Ticket columns.",
     includes: ["ticketPrefs", "ticketDensity", "ticketClassifiers", "ticketAutoRefresh"],
-    needsColumnConfirmation: true,
     payload: {
       ticketPrefs: {
         ...DEFAULT_TICKET_PREFS,
         compact: true,
         colorsEnabled: true,
-        hideEnabled: false,    // user opts in column-by-column
       },
       ticketDensity: { ...DEFAULT_TICKET_DENSITY,
         rowMinHeight: 32, cellPaddingTop: 4, cellPaddingBottom: 4,
@@ -290,19 +288,6 @@ const BUILTIN_TEMPLATES = [
         showIndicator: true,
       },
     },
-    // Set of columns suggested for keeping. Everything else discovered
-    // on the tenant goes into a confirmation dialog where the user picks
-    // what to actually hide. This is the audit's rejection of the v1
-    // "auto-hide non-critical" approach.
-    suggestedKeepColumns: [
-      "generic-table-cells-selectable",
-      "ticket-table-cells-status",
-      "ticket-table-cells-sla",
-      "ticket-table-cells-subject",
-      "ticket-table-cells-assignee",
-      "generic-table-cells-date",
-      "generic-table-cells-id",
-    ],
   },
 ];
 
@@ -1811,14 +1796,9 @@ function renderTemplateRow(tpl, isUser) {
   actions.className = "tpl-actions";
   const apply = document.createElement("button");
   apply.type = "button"; apply.textContent = "Apply";
-  apply.addEventListener("click", () => applyTemplate(tpl, false));
+  apply.title = "Apply this template — only the sections it declares (Includes:). Your hide list, custom view styling, and reorder are NEVER touched by templates.";
+  apply.addEventListener("click", () => applyTemplate(tpl));
   actions.appendChild(apply);
-
-  const applyAll = document.createElement("button");
-  applyAll.type = "button"; applyAll.textContent = "Apply (full)";
-  applyAll.title = "Overwrite ALL sections, not just the included ones";
-  applyAll.addEventListener("click", () => applyTemplate(tpl, true));
-  actions.appendChild(applyAll);
 
   const exp = document.createElement("button");
   exp.type = "button"; exp.textContent = "Export";
@@ -1840,73 +1820,43 @@ function renderTemplateRow(tpl, isUser) {
   return li;
 }
 
-async function applyTemplate(tpl, fullOverwrite) {
-  const sectionsToApply = fullOverwrite ? SECTION_NAMES : (tpl.includes || []);
-  const sectionList = sectionsToApply.join(", ") || "(none)";
-  const msg = fullOverwrite
-    ? `Apply "${tpl.name}" with FULL OVERWRITE? This wipes all sections (${sectionList}).`
-    : `Apply "${tpl.name}"? This will overwrite: ${sectionList}.`;
+// Sections that hold the user's hand-curated DATA, never template-managed
+// styling. Templates must never touch these — neither built-in templates
+// nor user-saved ones. The user can edit these directly in their sections
+// (Hide / Customize / Reorder / Ticket columns).
+const PROTECTED_USER_DATA_SECTIONS = Object.freeze([
+  "hide", "order", "customViews", "ticketHide",
+]);
+
+async function applyTemplate(tpl) {
+  const allDeclared = tpl.includes || [];
+  const blocked = allDeclared.filter(s => PROTECTED_USER_DATA_SECTIONS.includes(s));
+  const sectionsToApply = allDeclared.filter(s => !PROTECTED_USER_DATA_SECTIONS.includes(s));
+  if (!sectionsToApply.length) {
+    els.tplStatus.textContent = `"${tpl.name}" only declares user-data sections (${blocked.join(", ")}) which templates never touch. Nothing to apply.`;
+    return;
+  }
+
+  // Show the user exactly what changes and explicitly call out what's preserved.
+  const preservedNote = blocked.length
+    ? `\n\nThis template also lists ${blocked.join(", ")}, but templates never overwrite those — your existing hide list / custom view styling / reorder / ticket column hide list will be preserved.`
+    : `\n\nYour hide list, custom view styling, reorder, and ticket column hide list are NEVER touched by templates — they're always preserved.`;
+  const msg = `Apply "${tpl.name}"? This will overwrite these sections of the current profile:\n\n${sectionsToApply.map(s => `  • ${s}`).join("\n")}${preservedNote}`;
   if (!await confirmModal(msg)) return;
 
   for (const section of sectionsToApply) {
     const value = tpl.payload?.[section];
-    if (value !== undefined) {
-      // Templates always replace, never merge. Route writes through the
-      // commit wrappers that auto-enable their master toggle.
-      if (section === "density")              await commitDensity(structuredClone(value), { replace: true });
-      else if (section === "theme")           await commitTheme(structuredClone(value), { replace: true });
-      else if (section === "ticketDensity")   await commitTicketDensity(structuredClone(value), { replace: true });
-      else if (section === "ticketTheme")     await commitTicketTheme(structuredClone(value), { replace: true });
-      else if (section === "ticketClassifiers") await commitTicketClassifiers(structuredClone(value), { replace: true });
-      else await store.replace(section, structuredClone(value));
-    } else if (fullOverwrite) {
-      await store.replace(section, SECTION_STRATEGY[section].getDefault());
-    }
+    if (value === undefined) continue;
+    if (section === "density")                await commitDensity(structuredClone(value), { replace: true });
+    else if (section === "theme")             await commitTheme(structuredClone(value), { replace: true });
+    else if (section === "ticketDensity")     await commitTicketDensity(structuredClone(value), { replace: true });
+    else if (section === "ticketTheme")       await commitTicketTheme(structuredClone(value), { replace: true });
+    else if (section === "ticketClassifiers") await commitTicketClassifiers(structuredClone(value), { replace: true });
+    else await store.replace(section, structuredClone(value));
   }
 
-  // v0.9.0 — interactive column-hide confirmation for templates that
-  // suggest hiding columns. We never auto-hide custom-field columns
-  // (audit fix #8: business-critical custom fields would silently vanish).
-  if (tpl.needsColumnConfirmation && Array.isArray(tpl.suggestedKeepColumns)) {
-    await runColumnConfirmationFlow(tpl);
-  }
-
-  els.tplStatus.textContent = `Applied "${tpl.name}".`;
-  // Re-render ticket sections so changes are visible without a page reload.
+  els.tplStatus.textContent = `Applied "${tpl.name}". User data sections preserved.`;
   renderAllTicketSections();
-}
-
-async function runColumnConfirmationFlow(tpl) {
-  const observed = Object.entries(ticketObservations.ticketColumns || {})
-    .map(([key, info]) => ({ key, label: info.label || key }))
-    .sort((a, b) => a.label.localeCompare(b.label));
-
-  if (!observed.length) {
-    // Nothing to confirm — user hasn't browsed a ticket list yet on this
-    // tenant. Don't apply any column hides; the template's other settings
-    // (density/colors/auto-refresh) still apply.
-    return;
-  }
-
-  const keepSet = new Set(tpl.suggestedKeepColumns || []);
-  const choices = observed.map((c) => ({
-    value: c.key,
-    label: `${c.label}  —  ${c.key.slice(0, 60)}${c.key.length > 60 ? "…" : ""}`,
-    checked: keepSet.has(c.key) || c.key.startsWith("ticket-table-cells-custom-field-"),
-  }));
-
-  const result = await checkboxModal(
-    `${tpl.name}: keep which columns visible? Unchecked columns will be hidden. Custom-field columns are pre-checked so you don't accidentally hide tenant-specific business data.`,
-    choices,
-  );
-  if (!result) return;   // user cancelled
-
-  const keepKeys = new Set(result);
-  const cols = {};
-  for (const c of observed) {
-    if (!keepKeys.has(c.key)) cols[c.key] = true;
-  }
-  await commitTicketHide(cols);
 }
 
 function exportTemplateFile(tpl) {
@@ -2790,8 +2740,16 @@ function renderTicketColumns() {
   const hidden = hide.cols || {};
 
   // Inputs: every column ever seen on this tenant (sorted by label).
+  // Filter out columns the user can't meaningfully manage:
+  //   - empty/missing label (spacer columns, render-frame leftovers)
+  //   - keys we synthesised with empty label segment ("layout:X|idx:N|label:")
+  // These are typically icon-only chrome (agent collision badge, overflow
+  // menu, expand toggle) that Zendesk needs and the user can't reasonably
+  // hide. We still keep them in the catalog for diagnostics — they just
+  // don't appear in the UI.
   const allCols = Object.entries(ticketObservations.ticketColumns || {})
     .map(([key, info]) => ({ key, ...info }))
+    .filter((c) => isUserManageableColumn(c))
     .sort((a, b) => (a.label || "").localeCompare(b.label || ""));
 
   els.ticketColumnsList.innerHTML = "";
@@ -2844,6 +2802,15 @@ function renderTicketColumns() {
     els.ticketColumnsList.appendChild(li);
   }
   renderForkLine("ticketHide", "ticketHide-fork");
+}
+
+// A column is user-manageable if it has a meaningful label. Empty labels
+// usually mean an icon-only spacer column, an overflow-menu trigger, or
+// render-frame chrome — none of which the user can sensibly hide via a
+// list UI.
+function isUserManageableColumn(col) {
+  if (col.label && col.label.trim().length > 0) return true;
+  return false;
 }
 function describeColumnScope(key) {
   if (key.startsWith("ticket-table-cells-custom-field-")) return "tenant";
