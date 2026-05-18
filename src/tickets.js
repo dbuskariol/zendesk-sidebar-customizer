@@ -569,13 +569,17 @@
     if (!h?.enhanced) return "";
 
     // When sticky is on, our HoverPreviewEnhancer fully replaces
-    // Zendesk's tooltip. Hide Zendesk's own popup entirely so it never
-    // flashes alongside ours.
+    // Zendesk's tooltip. We use visibility:hidden + pointer-events:none
+    // instead of display:none so Zendesk's tooltip still occupies its
+    // computed position — that lets us read getBoundingClientRect off
+    // it to place our own popup where Zendesk would have placed its
+    // native preview. The user never sees the Zendesk one.
     if (h.sticky) {
       return `
 [data-test-id="ticket_table_tooltip"]:not([data-zvt-hover-popup]),
 [data-garden-id="modals.tooltip_dialog.backdrop"] {
-  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
       `.trim();
     }
