@@ -1372,7 +1372,7 @@ tbody[data-garden-id="tables.body"] > tr[data-garden-id="tables.row"]:not([data-
       }
     }
     /**
-     * Lovely-Views-inspired layout:
+     * Two-pane preview layout:
      *   ┌─────────────────────────────────────────────────────────────┐
      *   │ #1234 Subject…                              [open] [📌] [✕] │  ← header
      *   ├─────────────────────────────────────────────────────────────┤
@@ -1384,7 +1384,7 @@ tbody[data-garden-id="tables.body"] > tr[data-garden-id="tables.row"]:not([data-
      *   │ Open full ticket →                                          │  ← footer
      *   └─────────────────────────────────────────────────────────────┘
      *
-     * Lovely-Views 2-pane layout:
+     * Two-pane layout (current):
      *   ┌────────────────────────────────────────────────────────────┐
      *   │ #1234 Subject…                            [📌 Pinned]  [✕] │  ← header
      *   ├──────────────────┬─────────────────────────────────────────┤
@@ -1503,9 +1503,9 @@ tbody[data-garden-id="tables.body"] > tr[data-garden-id="tables.row"]:not([data-
       rightPane.setAttribute("data-zvt-convo-pane", "1");
       rightPane.style.cssText = "flex:1 1 auto;min-width:0;padding:12px 16px;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:8px;word-wrap:break-word;overflow-wrap:anywhere;";
 
-      // Build the comment list. Lovely Views shows newest-first so the
-      // most recent reply is what you see immediately. The API uses
-      // sort_order=asc, so we reverse here.
+      // Build the comment list. Show newest-first so the most recent
+      // reply is what you see immediately. The API uses sort_order=asc,
+      // so we reverse here.
       const allComments = [];
       if (commentsRes?.comments && Array.isArray(commentsRes.comments)) {
         for (const c of commentsRes.comments) allComments.push(c);

@@ -9,7 +9,7 @@ A browser extension (Manifest V3) for total control over the **Views sidebar** A
 - 🙈 **Hide views and groups** — uncheck a view to hide it; uncheck a group to hide its entire subtree.
 - 🔀 **Reorder anything** — drag-and-drop or arrow keys. Pick CSS reorder (visual, robust) or DOM reorder (structural, experimental).
 - 🎟️ **Ticket-list customization (v0.9)** — density tokens for the ticket table, hide columns, color rows by status / SLA / priority, auto-refresh, theme overrides. All columns/statuses are auto-discovered per tenant.
-- 📦 **Templates** — built-ins (Compact / Comfortable / Dark accent / Tickets — high density / Lovely-like / SLA war room) plus your own saved templates. Apply partially or full overwrite.
+- 📦 **Templates** — built-ins (Compact / Comfortable / Dark accent / Tickets — high density / Conversation preview / SLA war room) plus your own saved templates. Apply partially or full overwrite.
 - 🛡️ **Resilient** — `data-test-id` and `data-garden-id` selectors with shape-detection fallback. Health pill in the popup warns if Zendesk's DOM changes.
 - 🌍 **Locale-aware** — English defaults for status / SLA / priority classification, with user-editable regex patterns for other locales. Non-English values stay unclassified (no color) until you map them; never misclassified.
 - 💾 **Portable** — export each profile to JSON, import on another machine.
@@ -183,7 +183,7 @@ Color overrides for the table: header background, header text, row hover backgro
 Built-in starter templates and your own saved templates. Built-ins:
 - **Compact / Comfortable / Dark accent** — sidebar density/theme presets.
 - **Tickets — high density** — compact density for the ticket table only; leaves sidebar untouched.
-- **Lovely-like** — inspired by [Lovely Views](https://www.lovestockleaf.com/zendesk-apps/lovely-views): compact density + status/SLA colors + auto-refresh 30s. Doesn't replicate the Marketplace-only features (AI summaries, advanced search, bookmarks).
+- **Conversation preview** — compact density + status/SLA colors + auto-refresh 30s + the sticky hover preview with full conversation history.
 - **SLA war room (preview)** — bold breached/at-risk highlighting + 15s refresh. Opens a column preview before hiding anything; pre-checks custom-field columns so business-critical data doesn't silently vanish.
 
 Save the current profile as a named template, apply partially (just the included sections), or full overwrite. Export / import as JSON; v0.6/0.7/0.8/0.9 templates are all compatible.
@@ -412,7 +412,7 @@ After loading the extension:
 - v0.6.x — Per-tenant profiles, color theming, per-view styling, DOM reorder mode, templates, real Zendesk intrinsic value calibration.
 - v0.7.0 — Live tab tracking, per-tab pill row, "Shared defaults" catalog source. Cleaned profile model — visited tenants no longer auto-create profiles.
 - v0.8.0 — Firefox support (≥128) via single manifest. No build step.
-- v0.9.0 — Ticket-list customization (Lovely-like): density tokens, hide columns (with tenant/layout scope), color rows by status/SLA/priority, auto-refresh, theme overrides. Fully dynamic — columns and statuses auto-discovered per tenant; locale-aware classification with English defaults and user-editable regex patterns.
+- v0.9.0 — Ticket-list customization: density tokens, hide columns (with tenant/layout scope), color rows by status/SLA/priority, auto-refresh, theme overrides. Fully dynamic — columns and statuses auto-discovered per tenant; locale-aware classification with English defaults and user-editable regex patterns.
 
 ## Contributing
 
