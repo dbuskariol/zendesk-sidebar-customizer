@@ -279,6 +279,48 @@
     showIndicator:   true,      // small pill in lower-right of the table
   });
 
+  // v0.9.3 — pagination behavior. Standard = Zendesk default. Infinite =
+  // auto-click "Next" when the user scrolls near the bottom of the
+  // scroll container. Note: this is auto-pagination (previous rows are
+  // replaced, not accumulated). True accumulating scroll would require
+  // intercepting the API response and re-rendering rows ourselves,
+  // which is significantly more complex and brittle against Zendesk's
+  // own re-renders.
+  const PAGINATION_MODES = Object.freeze(["standard", "infinite"]);
+  const DEFAULT_TICKET_PAGINATION = Object.freeze({
+    mode:                  "standard",
+    bottomThresholdPx:     200,     // trigger Next when within N px of bottom
+    hidePaginator:         true,    // when infinite: hide the Next/Prev buttons
+  });
+  const TICKET_PAGINATION_RANGES = Object.freeze({
+    bottomThresholdPx: { min: 50, max: 1200 },
+  });
+
+  // v0.9.2 — Lovely-like hover preview enhancements.
+  // Zendesk renders a built-in tooltip on row hover:
+  //   [data-test-id="ticket_table_tooltip"]
+  // with inner sections for header / description / comments. By default
+  // it's cramped — long descriptions and comment lists are cut off. We
+  // resize it via CSS and make the body scroll.
+  //
+  // v0.9.3 — sticky (keeps a cloned copy of the tooltip on screen until
+  // you click outside) + full conversation (fetches ALL comments from
+  // /api/v2/tickets/<id>/comments and renders them below the existing
+  // Zendesk-shown few).
+  const DEFAULT_TICKET_HOVER = Object.freeze({
+    enhanced:         false,
+    maxWidthPx:       720,
+    maxHeightVh:      80,
+    scrollComments:   true,
+    sticky:           false,   // clone the tooltip on appear, persist until dismissed
+    fullConversation: false,   // append all comments via the Zendesk REST API
+  });
+
+  const TICKET_HOVER_RANGES = Object.freeze({
+    maxWidthPx:  { min: 360, max: 1200 },
+    maxHeightVh: { min: 30,  max: 95 },
+  });
+
   /* ========================== section strategy ======================== */
 
   // The single source of truth for every settings section.
@@ -365,6 +407,18 @@
       merge: "deep",
       getDefault: () => structuredClone(DEFAULT_TICKET_AUTO_REFRESH),
       validate: validateTicketAutoRefresh,
+    },
+    ticketHover: {
+      area: "sync",
+      merge: "deep",
+      getDefault: () => structuredClone(DEFAULT_TICKET_HOVER),
+      validate: validateTicketHover,
+    },
+    ticketPagination: {
+      area: "sync",
+      merge: "deep",
+      getDefault: () => structuredClone(DEFAULT_TICKET_PAGINATION),
+      validate: validateTicketPagination,
     },
   });
 
@@ -606,6 +660,34 @@
       intervalSec:     interval,
       pauseOnSelected: asBool(v?.pauseOnSelected, d.pauseOnSelected),
       showIndicator:   asBool(v?.showIndicator, d.showIndicator),
+    };
+  }
+
+  function validateTicketHover(v) {
+    const d = DEFAULT_TICKET_HOVER;
+    const w = asNum(v?.maxWidthPx, TICKET_HOVER_RANGES.maxWidthPx.min, TICKET_HOVER_RANGES.maxWidthPx.max, d.maxWidthPx);
+    const h = asNum(v?.maxHeightVh, TICKET_HOVER_RANGES.maxHeightVh.min, TICKET_HOVER_RANGES.maxHeightVh.max, d.maxHeightVh);
+    return {
+      enhanced:         asBool(v?.enhanced, d.enhanced),
+      maxWidthPx:       Math.round(w),
+      maxHeightVh:      Math.round(h),
+      scrollComments:   asBool(v?.scrollComments, d.scrollComments),
+      sticky:           asBool(v?.sticky, d.sticky),
+      fullConversation: asBool(v?.fullConversation, d.fullConversation),
+    };
+  }
+
+  function validateTicketPagination(v) {
+    const d = DEFAULT_TICKET_PAGINATION;
+    const mode = PAGINATION_MODES.includes(v?.mode) ? v.mode : d.mode;
+    const threshold = asNum(v?.bottomThresholdPx,
+      TICKET_PAGINATION_RANGES.bottomThresholdPx.min,
+      TICKET_PAGINATION_RANGES.bottomThresholdPx.max,
+      d.bottomThresholdPx);
+    return {
+      mode,
+      bottomThresholdPx: Math.round(threshold),
+      hidePaginator:     asBool(v?.hidePaginator, d.hidePaginator),
     };
   }
 
@@ -1209,6 +1291,8 @@
     DEFAULT_ORDER, DEFAULT_THEME, DEFAULT_CUSTOM_VIEWS,
     DEFAULT_TICKET_PREFS, DEFAULT_TICKET_DENSITY, DEFAULT_TICKET_THEME,
     DEFAULT_TICKET_HIDE, DEFAULT_TICKET_CLASSIFIERS, DEFAULT_TICKET_AUTO_REFRESH,
+    DEFAULT_TICKET_HOVER, TICKET_HOVER_RANGES,
+    DEFAULT_TICKET_PAGINATION, TICKET_PAGINATION_RANGES, PAGINATION_MODES,
     RESERVED_PROFILE_ID,
     // Classes / functions
     ProfileStore,

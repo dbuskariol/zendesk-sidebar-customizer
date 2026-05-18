@@ -48,10 +48,12 @@
   const TABLE_ATTR = "data-zvt-ticket-table";
   const COL_KEY_ATTR = "data-zvt-col-key";
   const STYLESHEET_IDS = Object.freeze({
-    density: "zvt-tickets-density",
-    hide:    "zvt-tickets-hide",
-    color:   "zvt-tickets-color",
-    theme:   "zvt-tickets-theme",
+    density:    "zvt-tickets-density",
+    hide:       "zvt-tickets-hide",
+    color:      "zvt-tickets-color",
+    theme:      "zvt-tickets-theme",
+    hover:      "zvt-tickets-hover",
+    pagination: "zvt-tickets-pagination",
   });
 
   const ANNOTATION_THROTTLE_MS = 100;
@@ -85,6 +87,11 @@
   // Auto-refresh manager — one per page, owns one timer for whichever
   // table is the "primary" (largest area).
   let autoRefresh = null;
+  // Hover-preview enhancer — singleton; owns the body MutationObserver
+  // that watches for Zendesk's tooltip to appear so we can clone/pin it.
+  let hoverEnhancer = null;
+  // Infinite-scroll manager — one per primary table.
+  let infiniteScroll = null;
 
   /* ============================ data shapes ========================== */
 
@@ -96,6 +103,8 @@
       ticketHide:         Z.DEFAULT_TICKET_HIDE,
       ticketClassifiers:  Z.DEFAULT_TICKET_CLASSIFIERS,
       ticketAutoRefresh:  Z.DEFAULT_TICKET_AUTO_REFRESH,
+      ticketHover:        Z.DEFAULT_TICKET_HOVER,
+      ticketPagination:   Z.DEFAULT_TICKET_PAGINATION,
     };
   }
   function makeEmptyObservations() {
@@ -542,6 +551,62 @@
     return rules.join("\n");
   }
 
+  /**
+   * Resize / enable scrolling on Zendesk's built-in row-hover tooltip
+   * (`[data-test-id="ticket_table_tooltip"]`). The tooltip renders as a
+   * portal at document level — it's NOT inside our managed table, so the
+   * scope rules are globally applied. That's safe because the test-id is
+   * Zendesk-canonical and unique to this widget.
+   *
+   * Future versions will also add sticky-on-hover (don't close when
+   * mouse moves into the tooltip) and API-fetched full conversation
+   * history (Zendesk only shows the most recent ~3 comments).
+   */
+  function buildHoverSheet() {
+    const prefs = settings.ticketPrefs;
+    if (!prefs?.enabled) return "";
+    const h = settings.ticketHover;
+    if (!h?.enhanced) return "";
+    const w = Math.round(h.maxWidthPx || Z.DEFAULT_TICKET_HOVER.maxWidthPx);
+    const vh = Math.round(h.maxHeightVh || Z.DEFAULT_TICKET_HOVER.maxHeightVh);
+    const scrollCommentsBlock = h.scrollComments
+      ? `[data-test-id="ticket_table_tooltip-comments"] {
+  max-height: calc(${vh}vh - 240px) !important;
+  overflow-y: auto !important;
+}`
+      : "";
+    return `
+[data-test-id="ticket_table_tooltip"]:not([data-zvt-hover-clone]) {
+  max-width: ${w}px !important;
+  min-width: ${Math.min(w, 480)}px !important;
+  max-height: ${vh}vh !important;
+}
+[data-garden-id="modals.tooltip_dialog.body"] {
+  max-height: calc(${vh}vh - 60px) !important;
+  overflow-y: auto !important;
+}
+${scrollCommentsBlock}
+    `.trim();
+  }
+
+  /**
+   * When infinite-scroll is on AND hidePaginator is on, hide Zendesk's
+   * Next/Previous buttons. The scroll listener auto-clicks Next so the
+   * paginator's main job is no longer needed.
+   */
+  function buildPaginationSheet() {
+    const prefs = settings.ticketPrefs;
+    if (!prefs?.enabled) return "";
+    const p = settings.ticketPagination;
+    if (!p || p.mode !== "infinite" || !p.hidePaginator) return "";
+    return `
+${TICKET_SELECTORS.paginateNext},
+${TICKET_SELECTORS.paginatePrev} {
+  display: none !important;
+}
+    `.trim();
+  }
+
   /* ============================= utilities =========================== */
 
   function pxOrInherit(v) {
@@ -898,6 +963,523 @@
     return document.querySelector(TICKET_SELECTORS.refreshBtn) || null;
   }
 
+  /* ===================== HoverPreviewEnhancer ======================= */
+  /*
+   * Watches the document for Zendesk's row-hover tooltip and (when
+   * enabled) clones it into a persistent overlay we control. The clone
+   * stays visible until the user clicks outside or presses Esc.
+   *
+   * When `fullConversation` is on, parses the ticket ID from the
+   * cloned content and fetches `/api/v2/tickets/<id>/comments` via the
+   * authenticated session cookie, then appends a "Full conversation"
+   * block below Zendesk's truncated comments list.
+   *
+   * Important design decisions:
+   *   - Clone vs intercept: we clone instead of trying to prevent
+   *     Zendesk's own close logic. Cloned content is read-only (no
+   *     React event handlers) which is fine for a read-mostly preview.
+   *   - Same-origin API call: `/api/v2/...` is on the tenant's own
+   *     domain, so the user's session cookie authenticates the fetch
+   *     and no extra host_permissions are needed.
+   *   - Sanitization: API HTML bodies are run through a simple
+   *     allow-list sanitizer that strips scripts, iframes, on* attrs,
+   *     and javascript: URLs before innerHTML insertion.
+   */
+  class HoverPreviewEnhancer {
+    constructor() {
+      this.observer = null;
+      this.clone = null;
+      this.outsideClickHandler = null;
+      this.escKeyHandler = null;
+      this.commentCache = new Map();     // ticketId → { data, at }
+      this.cacheTtlMs = 300_000;          // 5 minutes
+    }
+
+    start() {
+      if (this.observer) return;
+      this.observer = new MutationObserver((muts) => {
+        for (const mut of muts) {
+          for (const node of mut.addedNodes) {
+            if (node.nodeType !== 1) continue;
+            const tooltip = node.matches?.('[data-test-id="ticket_table_tooltip"]')
+              ? node
+              : node.querySelector?.('[data-test-id="ticket_table_tooltip"]');
+            if (tooltip) this.handleTooltipAppeared(tooltip);
+          }
+        }
+      });
+      this.observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    stop() {
+      this.observer?.disconnect();
+      this.observer = null;
+      this.dismiss();
+      this.commentCache.clear();
+    }
+
+    handleTooltipAppeared(tooltip) {
+      // Only run if BOTH enhanced and sticky are on. Without sticky we
+      // let Zendesk's tooltip behave normally (CSS resize still applies).
+      const h = settings.ticketHover;
+      if (!h?.enhanced || !h?.sticky) return;
+
+      // Wait one frame for Zendesk to fully render the tooltip's
+      // inner content (otherwise we'd clone an empty shell).
+      requestAnimationFrame(() => this.cloneTooltip(tooltip));
+    }
+
+    cloneTooltip(originalTooltip) {
+      if (!document.contains(originalTooltip)) return;
+      this.dismiss();   // any prior clone
+
+      const rect = originalTooltip.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+
+      const clone = document.createElement("div");
+      clone.setAttribute("data-zvt-hover-clone", "1");
+      clone.setAttribute("data-test-id", "ticket_table_tooltip");
+      Object.assign(clone.style, {
+        position: "fixed",
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        zIndex: "2147483646",
+        // Inherit Zendesk's tooltip background/border via the styled-
+        // components classes we copy below.
+      });
+      // Copy class list so Zendesk's own styles apply to our clone too.
+      // (StyledTooltipDialog-sc-... etc.) This is mildly fragile across
+      // Zendesk class-hash changes but degrades to "unstyled box" not
+      // "broken UI", and we add our own border as a safety net.
+      clone.className = originalTooltip.className;
+      clone.style.background = clone.style.background || "white";
+      clone.style.border = clone.style.border || "1px solid rgba(0,0,0,0.15)";
+      clone.style.boxShadow = "0 8px 24px rgba(0,0,0,0.18)";
+      clone.style.borderRadius = "8px";
+      clone.style.overflow = "hidden";
+      clone.innerHTML = originalTooltip.innerHTML;
+
+      // Pinned label + close button in the corner.
+      const header = document.createElement("div");
+      Object.assign(header.style, {
+        position: "absolute", top: "6px", right: "6px",
+        display: "flex", alignItems: "center", gap: "6px",
+        zIndex: "1",
+      });
+      const pinned = document.createElement("span");
+      pinned.textContent = "📌 Pinned";
+      Object.assign(pinned.style, {
+        background: "rgba(0,0,0,0.78)", color: "#fff",
+        padding: "2px 8px", borderRadius: "10px",
+        font: "11px system-ui, sans-serif", letterSpacing: "0.02em",
+      });
+      header.appendChild(pinned);
+      const closeBtn = document.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.textContent = "✕";
+      closeBtn.title = "Dismiss pinned preview (Esc)";
+      closeBtn.setAttribute("aria-label", "Close pinned preview");
+      Object.assign(closeBtn.style, {
+        width: "24px", height: "24px", border: "none",
+        background: "rgba(0,0,0,0.78)", color: "#fff",
+        borderRadius: "12px", cursor: "pointer",
+        font: "12px system-ui, sans-serif", lineHeight: "1",
+      });
+      closeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.dismiss();
+      });
+      header.appendChild(closeBtn);
+      clone.appendChild(header);
+
+      // Make the body scroll inside the clone (independent of the
+      // resize stylesheet, so sticky works even without enhanced
+      // resize).
+      const body = clone.querySelector('[data-garden-id="modals.tooltip_dialog.body"]');
+      if (body) {
+        body.style.maxHeight = `min(${settings.ticketHover?.maxHeightVh || 80}vh, calc(100vh - 80px))`;
+        body.style.overflowY = "auto";
+      }
+      const tooltipMaxWidth = settings.ticketHover?.maxWidthPx || 720;
+      if (rect.width < 360 || rect.width > tooltipMaxWidth) {
+        clone.style.width = `${Math.min(tooltipMaxWidth, Math.max(360, rect.width))}px`;
+      }
+
+      // Reposition if the clone would extend off-screen (the original
+      // tooltip was already positioned by Zendesk but our clone may
+      // be wider/taller now).
+      document.body.appendChild(clone);
+      this.clone = clone;
+      this.repositionClone(clone);
+
+      // Hide Zendesk's own tooltip — visually replaced by our clone.
+      this.hideOriginalTooltips();
+
+      // Outside-click + Esc dismiss
+      setTimeout(() => {
+        this.outsideClickHandler = (e) => {
+          if (!this.clone) return;
+          if (!this.clone.contains(e.target)) this.dismiss();
+        };
+        this.escKeyHandler = (e) => {
+          if (e.key === "Escape") this.dismiss();
+        };
+        document.addEventListener("mousedown", this.outsideClickHandler, true);
+        document.addEventListener("keydown", this.escKeyHandler, true);
+      }, 0);
+
+      // Inject full conversation if enabled.
+      if (settings.ticketHover?.fullConversation) {
+        const ticketId = this.extractTicketId(clone);
+        if (ticketId) this.injectFullConversation(clone, ticketId);
+      }
+    }
+
+    repositionClone(clone) {
+      const r = clone.getBoundingClientRect();
+      const margin = 8;
+      let left = r.left, top = r.top;
+      if (r.right > window.innerWidth - margin) {
+        left = Math.max(margin, window.innerWidth - r.width - margin);
+      }
+      if (r.bottom > window.innerHeight - margin) {
+        top = Math.max(margin, window.innerHeight - r.height - margin);
+      }
+      if (left !== r.left) clone.style.left = `${left}px`;
+      if (top !== r.top)  clone.style.top  = `${top}px`;
+    }
+
+    hideOriginalTooltips() {
+      // Hide any Zendesk-rendered ticket tooltip currently in the DOM
+      // (not our clone, which has data-zvt-hover-clone).
+      document.querySelectorAll('[data-test-id="ticket_table_tooltip"]').forEach((el) => {
+        if (el === this.clone) return;
+        if (el.hasAttribute("data-zvt-hover-clone")) return;
+        el.style.visibility = "hidden";
+        el.style.pointerEvents = "none";
+        el.dataset.zvtHidden = "1";
+      });
+      // Also hide the backdrop wrapper if Zendesk uses one.
+      document.querySelectorAll('[data-garden-id="modals.tooltip_dialog.backdrop"]').forEach((el) => {
+        el.style.visibility = "hidden";
+        el.style.pointerEvents = "none";
+        el.dataset.zvtHidden = "1";
+      });
+    }
+
+    restoreOriginalTooltips() {
+      document.querySelectorAll('[data-zvt-hidden="1"]').forEach((el) => {
+        el.style.visibility = "";
+        el.style.pointerEvents = "";
+        delete el.dataset.zvtHidden;
+      });
+    }
+
+    dismiss() {
+      if (this.clone?.parentNode) this.clone.parentNode.removeChild(this.clone);
+      this.clone = null;
+      if (this.outsideClickHandler) {
+        document.removeEventListener("mousedown", this.outsideClickHandler, true);
+        this.outsideClickHandler = null;
+      }
+      if (this.escKeyHandler) {
+        document.removeEventListener("keydown", this.escKeyHandler, true);
+        this.escKeyHandler = null;
+      }
+      this.restoreOriginalTooltips();
+    }
+
+    extractTicketId(scope) {
+      // Prefer an anchor's href.
+      const a = scope.querySelector('a[href*="/agent/tickets/"]');
+      if (a) {
+        const m = a.getAttribute("href").match(/\/agent\/tickets\/(\d+)/);
+        if (m) return m[1];
+      }
+      // Look for "#<digits>" in any text.
+      const txt = (scope.innerText || "").match(/#(\d+)/);
+      if (txt) return txt[1];
+      return null;
+    }
+
+    async injectFullConversation(scope, ticketId) {
+      const commentsSection = scope.querySelector('[data-test-id="ticket_table_tooltip-comments"]')
+                          || scope.querySelector('[data-garden-id="modals.tooltip_dialog.body"]');
+      if (!commentsSection) return;
+
+      const block = document.createElement("div");
+      block.setAttribute("data-zvt-full-conversation", "1");
+      block.style.cssText = "border-top: 1px solid rgba(0,0,0,0.12); margin-top: 12px; padding-top: 12px; font-size: 12px;";
+
+      const heading = document.createElement("div");
+      heading.style.cssText = "font-weight: 600; color: #444; margin-bottom: 8px; display: flex; align-items: center; gap: 8px;";
+      heading.innerHTML = `<span>Full conversation</span><span style="font-weight:400;color:#888">loading…</span>`;
+      block.appendChild(heading);
+      commentsSection.appendChild(block);
+
+      try {
+        const data = await this.fetchComments(ticketId);
+        const comments = Array.isArray(data?.comments) ? data.comments : [];
+        const usersById = new Map((data?.users || []).map(u => [u.id, u]));
+
+        heading.querySelector("span:last-child").textContent = `${comments.length} comment${comments.length === 1 ? "" : "s"}`;
+
+        if (!comments.length) {
+          const empty = document.createElement("div");
+          empty.style.cssText = "color: #888; font-style: italic;";
+          empty.textContent = "(no comments)";
+          block.appendChild(empty);
+          return;
+        }
+
+        const list = document.createElement("div");
+        list.style.cssText = "display: flex; flex-direction: column; gap: 10px;";
+        for (const c of comments) {
+          list.appendChild(this.renderComment(c, usersById));
+        }
+        block.appendChild(list);
+      } catch (e) {
+        heading.querySelector("span:last-child").innerHTML = `<span style="color:#d33">couldn't load: ${escapeText(e?.message || String(e))}</span>`;
+      }
+    }
+
+    renderComment(comment, usersById) {
+      const card = document.createElement("div");
+      card.style.cssText = "padding: 8px 10px; background: rgba(0,0,0,0.025); border-radius: 6px;";
+      const user = usersById.get(comment.author_id);
+      const isInternal = comment.public === false;
+      const meta = document.createElement("div");
+      meta.style.cssText = "font-size: 11px; color: #666; margin-bottom: 6px; display: flex; gap: 8px; align-items: center;";
+      const who = document.createElement("strong");
+      who.style.color = "#222";
+      who.textContent = user?.name || "Unknown";
+      meta.appendChild(who);
+      const when = document.createElement("span");
+      when.textContent = formatRelative(comment.created_at);
+      when.title = new Date(comment.created_at).toLocaleString();
+      meta.appendChild(when);
+      if (isInternal) {
+        const badge = document.createElement("span");
+        badge.textContent = "internal";
+        badge.style.cssText = "background: #fff4d4; color: #7a5400; padding: 1px 6px; border-radius: 8px; font-size: 10px;";
+        meta.appendChild(badge);
+      }
+      card.appendChild(meta);
+
+      const body = document.createElement("div");
+      body.style.cssText = "font-size: 12px; line-height: 1.5; color: #222; word-wrap: break-word;";
+      body.innerHTML = sanitizeHtml(comment.html_body || comment.body || "");
+      card.appendChild(body);
+      return card;
+    }
+
+    async fetchComments(ticketId) {
+      const cached = this.commentCache.get(ticketId);
+      if (cached && Date.now() - cached.at < this.cacheTtlMs) return cached.data;
+
+      const url = `/api/v2/tickets/${encodeURIComponent(ticketId)}/comments?include=users&sort_order=asc&per_page=100`;
+      const res = await fetch(url, {
+        credentials: "include",
+        headers: { "Accept": "application/json" },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const ct = res.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) {
+        throw new Error("unexpected response (logged out?)");
+      }
+      const data = await res.json();
+      this.commentCache.set(ticketId, { data, at: Date.now() });
+      return data;
+    }
+  }
+
+  // Minimal HTML sanitiser — strips scripts/styles/iframes, on* attrs,
+  // and javascript:/data: URLs. Modern browsers don't execute scripts
+  // inserted via innerHTML so this is defence in depth.
+  function sanitizeHtml(html) {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = String(html || "");
+    tmp.querySelectorAll("script, style, iframe, object, embed").forEach((el) => el.remove());
+    tmp.querySelectorAll("*").forEach((el) => {
+      for (const attr of Array.from(el.attributes)) {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith("on")) { el.removeAttribute(attr.name); continue; }
+        if ((name === "href" || name === "src" || name === "action")
+            && /^\s*(javascript|data|vbscript):/i.test(attr.value)) {
+          el.removeAttribute(attr.name);
+        }
+      }
+    });
+    return tmp.innerHTML;
+  }
+
+  function escapeText(s) {
+    const tmp = document.createElement("div");
+    tmp.textContent = String(s || "");
+    return tmp.innerHTML;
+  }
+
+  function formatRelative(iso) {
+    if (!iso) return "";
+    const date = new Date(iso);
+    const diff = Date.now() - date.getTime();
+    const sec = Math.floor(diff / 1000);
+    if (sec < 60)   return `${sec}s ago`;
+    const min = Math.floor(sec / 60);
+    if (min < 60)   return `${min}m ago`;
+    const hr  = Math.floor(min / 60);
+    if (hr < 24)    return `${hr}h ago`;
+    const day = Math.floor(hr / 24);
+    if (day < 7)    return `${day}d ago`;
+    return date.toLocaleDateString();
+  }
+
+  /* ======================== InfiniteScroll =========================== */
+  /*
+   * Auto-paginate-on-scroll. When user scrolls within
+   * `bottomThresholdPx` of the bottom of the table's scroll container,
+   * programmatically click the "Next" pagination button. Previous rows
+   * are replaced (Zendesk re-renders the table) — this is NOT true
+   * accumulating infinite scroll, but it removes the click friction.
+   *
+   * Disables itself when the Next button is disabled (last page) or
+   * not found.
+   */
+  class InfiniteScroll {
+    constructor(table) {
+      this.table = table;
+      this.scrollContainer = null;
+      this.boundScroll = () => this.onScroll();
+      this.lastClickAt = 0;
+      this.minClickInterval = 800;   // debounce — don't click more than ~1x/sec
+      this.loadingEl = null;
+      this.attached = false;
+    }
+    attach() {
+      if (this.attached) return;
+      this.scrollContainer = this.findScrollContainer();
+      if (!this.scrollContainer) return;
+      this.scrollContainer.addEventListener("scroll", this.boundScroll, { passive: true });
+      this.attached = true;
+    }
+    detach() {
+      if (!this.attached) return;
+      this.scrollContainer?.removeEventListener("scroll", this.boundScroll);
+      this.scrollContainer = null;
+      this.attached = false;
+      this.removeLoadingIndicator();
+    }
+    findScrollContainer() {
+      // Walk up from the table looking for an ancestor with overflow:auto/scroll.
+      let node = this.table?.parentElement;
+      for (let i = 0; node && i < 12; i++, node = node.parentElement) {
+        const cs = getComputedStyle(node);
+        if ((cs.overflowY === "auto" || cs.overflowY === "scroll") && node.scrollHeight > node.clientHeight) {
+          return node;
+        }
+      }
+      return null;
+    }
+    onScroll() {
+      const ar = settings.ticketPagination;
+      if (ar?.mode !== "infinite") return this.detach();
+      if (!this.scrollContainer || !document.contains(this.scrollContainer)) return this.detach();
+
+      const container = this.scrollContainer;
+      const threshold = ar.bottomThresholdPx || Z.DEFAULT_TICKET_PAGINATION.bottomThresholdPx;
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      if (distanceFromBottom > threshold) {
+        this.removeLoadingIndicator();
+        return;
+      }
+      // Debounce so we don't trigger multiple clicks per tick or while
+      // the next page is loading.
+      if (Date.now() - this.lastClickAt < this.minClickInterval) return;
+
+      const nextBtn = document.querySelector(TICKET_SELECTORS.paginateNext);
+      if (!nextBtn) return;
+      if (nextBtn.disabled || nextBtn.getAttribute("aria-disabled") === "true") {
+        this.showAtEnd();
+        return;
+      }
+      this.lastClickAt = Date.now();
+      this.showLoading();
+      nextBtn.click();
+    }
+    showLoading() {
+      if (!this.loadingEl) {
+        const el = document.createElement("div");
+        el.setAttribute("data-zvt", "tickets-infinite-loading");
+        Object.assign(el.style, {
+          position: "absolute", left: "50%", bottom: "8px",
+          transform: "translateX(-50%)",
+          padding: "4px 12px", borderRadius: "12px",
+          background: "rgba(21,26,30,0.85)", color: "#fff",
+          font: "11px system-ui, sans-serif", zIndex: "2",
+          pointerEvents: "none",
+        });
+        el.textContent = "Loading next page…";
+        this.loadingEl = el;
+      }
+      const parent = this.scrollContainer || this.table.parentElement;
+      if (parent && getComputedStyle(parent).position === "static") {
+        // Need a positioned ancestor; fall back to fixed.
+        Object.assign(this.loadingEl.style, {
+          position: "fixed", bottom: "16px", top: "auto",
+        });
+        document.body.appendChild(this.loadingEl);
+      } else if (parent && this.loadingEl.parentNode !== parent) {
+        parent.appendChild(this.loadingEl);
+      }
+    }
+    showAtEnd() {
+      this.showLoading();
+      if (this.loadingEl) {
+        this.loadingEl.textContent = "End of list";
+        setTimeout(() => this.removeLoadingIndicator(), 2000);
+      }
+    }
+    removeLoadingIndicator() {
+      if (this.loadingEl?.parentNode) this.loadingEl.parentNode.removeChild(this.loadingEl);
+      this.loadingEl = null;
+    }
+  }
+
+  function syncHoverEnhancer() {
+    const h = settings.ticketHover;
+    const want = !!(settings.ticketPrefs?.enabled && h?.enhanced && h?.sticky);
+    if (want) {
+      if (!hoverEnhancer) hoverEnhancer = new HoverPreviewEnhancer();
+      hoverEnhancer.start();
+    } else if (hoverEnhancer) {
+      hoverEnhancer.stop();
+      hoverEnhancer = null;
+    }
+  }
+
+  function syncInfiniteScroll() {
+    const p = settings.ticketPagination;
+    const want = !!(settings.ticketPrefs?.enabled && p?.mode === "infinite" && managed.size > 0);
+    if (want) {
+      const primary = pickPrimaryTable();
+      if (!primary) {
+        infiniteScroll?.detach();
+        infiniteScroll = null;
+        return;
+      }
+      if (infiniteScroll && infiniteScroll.table !== primary) {
+        infiniteScroll.detach();
+        infiniteScroll = null;
+      }
+      if (!infiniteScroll) infiniteScroll = new InfiniteScroll(primary);
+      infiniteScroll.attach();
+    } else if (infiniteScroll) {
+      infiniteScroll.detach();
+      infiniteScroll = null;
+    }
+  }
+
   /* ============================ scan loop ============================ */
 
   function scanForTicketTables() {
@@ -973,10 +1555,6 @@
 
   function refreshSettings() {
     if (!profile) return;
-    // v0.9.1: the sidebar's "Extension enabled" toggle is the EXTENSION
-    // master switch — when off, every feature (sidebar AND ticket-list)
-    // must visibly turn off. Resolve sidebar prefs alongside ticket
-    // prefs and bail-with-teardown if either disables the area.
     const sidebarPrefs = profile.resolve("prefs");
     const ticketPrefs  = profile.resolve("ticketPrefs");
     if (!sidebarPrefs?.enabled || !ticketPrefs?.enabled) {
@@ -990,20 +1568,24 @@
       ticketHide:        profile.resolve("ticketHide"),
       ticketClassifiers: profile.resolve("ticketClassifiers"),
       ticketAutoRefresh: profile.resolve("ticketAutoRefresh"),
+      ticketHover:       profile.resolve("ticketHover"),
+      ticketPagination:  profile.resolve("ticketPagination"),
     };
-    // If we were torn down previously, scan re-populates managed tables.
     if (!managed.size) scanForTicketTables();
     syncAutoRefresh();
+    syncHoverEnhancer();
+    syncInfiniteScroll();
     rebuildSheets();
-    // Re-annotate so colour mapping changes are visible immediately.
     for (const m of managed.values()) m.annotate();
   }
 
   function rebuildSheets() {
-    rebuildSheet(STYLESHEET_IDS.density, buildDensitySheet());
-    rebuildSheet(STYLESHEET_IDS.hide,    buildHideSheet());
-    rebuildSheet(STYLESHEET_IDS.color,   buildColorSheet());
-    rebuildSheet(STYLESHEET_IDS.theme,   buildThemeSheet());
+    rebuildSheet(STYLESHEET_IDS.density,    buildDensitySheet());
+    rebuildSheet(STYLESHEET_IDS.hide,       buildHideSheet());
+    rebuildSheet(STYLESHEET_IDS.color,      buildColorSheet());
+    rebuildSheet(STYLESHEET_IDS.theme,      buildThemeSheet());
+    rebuildSheet(STYLESHEET_IDS.hover,      buildHoverSheet());
+    rebuildSheet(STYLESHEET_IDS.pagination, buildPaginationSheet());
   }
   function rebuildSheet(id, css) {
     let el = document.getElementById(id);
@@ -1030,22 +1612,26 @@
     managed.clear();
     autoRefresh?.destroy();
     autoRefresh = null;
+    hoverEnhancer?.stop();
+    hoverEnhancer = null;
+    infiniteScroll?.detach();
+    infiniteScroll = null;
     removeAllSheets();
   }
 
   function scan() {
-    // Honor the same master switches as refreshSettings — the periodic
-    // scan loop should not re-create stylesheets after teardown.
     if (profile) {
       const sidebarPrefs = profile.resolve("prefs");
       const ticketPrefs  = profile.resolve("ticketPrefs");
       if (!sidebarPrefs?.enabled || !ticketPrefs?.enabled) {
-        if (managed.size || autoRefresh) teardown();
+        if (managed.size || autoRefresh || hoverEnhancer || infiniteScroll) teardown();
         return;
       }
     }
     scanForTicketTables();
     syncAutoRefresh();
+    syncHoverEnhancer();
+    syncInfiniteScroll();
     rebuildSheets();
   }
 
