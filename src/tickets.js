@@ -1254,10 +1254,23 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
 
       const body = document.createElement("div");
       body.setAttribute("data-zvt-popup-body", "1");
-      Object.assign(body.style, {
-        padding: "12px 16px", overflowY: "auto", flexGrow: "1",
-      });
-      body.innerHTML = `<div style="color:${theme.mutedFg};font-style:italic;padding:8px 0;">Loading ticket #${escapeText(ticketId)}…</div>`;
+      const mode = settings.ticketHover?.mode || "iframe";
+      if (mode === "iframe") {
+        // Iframe mode: embed the ticket viewer itself. Body becomes a
+        // bare container; populatePopup fills it with an <iframe> that
+        // loads /agent/tickets/<id>. Padding/scroll come from inside
+        // the iframe so we don't double-scroll.
+        Object.assign(body.style, {
+          padding: "0", overflow: "hidden", flex: "1 1 auto", minHeight: "0",
+          background: theme.popupBg,
+        });
+      } else {
+        Object.assign(body.style, {
+          padding: "0", overflowY: "auto", flex: "1 1 auto", minHeight: "0",
+          display: "flex", flexDirection: "column",
+        });
+      }
+      body.innerHTML = `<div style="color:${theme.mutedFg};font-style:italic;padding:14px 16px;">Loading ticket #${escapeText(ticketId)}…</div>`;
       popup.appendChild(body);
 
       return popup;
@@ -1299,8 +1312,12 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     async populatePopup(popup, ticketId, theme) {
       const body = popup.querySelector('[data-zvt-popup-body]');
       if (!body) return;
+      const mode = settings.ticketHover?.mode || "iframe";
+      if (mode === "iframe") {
+        this.populateIframe(popup, body, ticketId, theme);
+        return;
+      }
       const fullConv = !!settings.ticketHover?.fullConversation;
-
       try {
         const [ticketRes, commentsRes] = await Promise.all([
           this.fetchTicket(ticketId),
@@ -1310,7 +1327,129 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
         this.renderPopupContent(body, ticketRes, commentsRes, theme);
       } catch (e) {
         if (this.popup !== popup) return;
-        body.innerHTML = `<div style="color:#d33;font-style:italic;padding:8px 0;">Couldn't load: ${escapeText(e?.message || String(e))}</div>`;
+        body.innerHTML = `<div style="color:#d33;font-style:italic;padding:14px 16px;">Couldn't load: ${escapeText(e?.message || String(e))}</div>`;
+      }
+    }
+
+    /**
+     * Iframe mode — embed /agent/tickets/<id> as an iframe. This is
+     * what Lovely Views does: the popup is a slim version of the
+     * actual ticket viewer, so everything Zendesk renders on the
+     * ticket page (composer, sidebar, conversation, etc) appears in
+     * the popup without us reimplementing it.
+     *
+     * Iframe loading is async and Zendesk's SPA may take a moment to
+     * render inside the iframe. We:
+     *   - Show a loading spinner immediately.
+     *   - Listen for `load` to swap to the iframe.
+     *   - If load fires but the iframe ends up blank / frame-busted
+     *     within 6s, fall back to the summary renderer with a hint.
+     *
+     * Frame-busting detection: Zendesk doesn't ship X-Frame-Options
+     * DENY (we're same-origin, so the iframe attempt is allowed by
+     * the browser). Some Zendesk SPA versions detect iframing and
+     * navigate window.top. We protect with sandbox="allow-same-origin
+     * allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+     * — but intentionally OMIT "allow-top-navigation" so any
+     * frame-busting attempt is a no-op.
+     */
+    populateIframe(popup, body, ticketId, theme) {
+      body.innerHTML = "";
+      const spinner = document.createElement("div");
+      spinner.style.cssText = `color:${theme.mutedFg};font-style:italic;padding:14px 16px;`;
+      spinner.textContent = `Loading ticket #${ticketId}…`;
+      body.appendChild(spinner);
+
+      const iframe = document.createElement("iframe");
+      iframe.src = `/agent/tickets/${encodeURIComponent(ticketId)}`;
+      iframe.setAttribute("sandbox", "allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals");
+      iframe.setAttribute("title", `Ticket #${ticketId} preview`);
+      iframe.setAttribute("referrerpolicy", "same-origin");
+      Object.assign(iframe.style, {
+        width: "100%", height: "100%",
+        border: "none", display: "block",
+        background: theme.popupBg,
+        visibility: "hidden",   // hide until load fires so spinner shows alone
+      });
+      body.appendChild(iframe);
+
+      let settled = false;
+      const fallbackTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        console.warn("[zvt-tickets] iframe took >6s to load — falling back to summary view");
+        body.removeChild(iframe);
+        spinner.remove();
+        // Re-render as summary
+        body.style.padding = "0";
+        body.style.overflowY = "auto";
+        body.style.display = "flex";
+        body.style.flexDirection = "column";
+        this.populatePopupAsSummary(popup, body, ticketId, theme);
+      }, 6000);
+
+      iframe.addEventListener("load", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(fallbackTimer);
+        if (this.popup !== popup) return;
+        // Some sanity check: did the iframe actually mount the ticket
+        // viewer (vs e.g. a logged-out redirect)?
+        try {
+          const doc = iframe.contentDocument;
+          const docUrl = doc?.location?.href || "";
+          if (docUrl && !docUrl.includes(`/agent/tickets/${ticketId}`)) {
+            // Probably redirected to login or somewhere else. Bail.
+            console.warn("[zvt-tickets] iframe redirected to", docUrl, "— falling back");
+            this.populateIframeFallback(popup, body, ticketId, theme);
+            return;
+          }
+        } catch (e) {
+          // Cross-origin access blocked (shouldn't happen — same origin).
+          // Continue anyway; iframe likely works fine for the user.
+        }
+        spinner.remove();
+        iframe.style.visibility = "visible";
+      });
+      iframe.addEventListener("error", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(fallbackTimer);
+        if (this.popup !== popup) return;
+        this.populateIframeFallback(popup, body, ticketId, theme);
+      });
+    }
+
+    populateIframeFallback(popup, body, ticketId, theme) {
+      // Strip the iframe + spinner.
+      body.innerHTML = "";
+      body.style.padding = "0";
+      body.style.overflowY = "auto";
+      body.style.display = "flex";
+      body.style.flexDirection = "column";
+      const note = document.createElement("div");
+      note.style.cssText = `font-size:11px;color:${theme.mutedFg};padding:6px 16px;background:${theme.subtleBg};border-bottom:1px solid ${theme.borderColor};`;
+      note.textContent = "Iframe preview failed — showing summary instead. Switch the Hover preview mode in options if you'd rather always see this view.";
+      body.appendChild(note);
+      this.populatePopupAsSummary(popup, body, ticketId, theme);
+    }
+
+    async populatePopupAsSummary(popup, body, ticketId, theme) {
+      const fullConv = !!settings.ticketHover?.fullConversation;
+      try {
+        const [ticketRes, commentsRes] = await Promise.all([
+          this.fetchTicket(ticketId),
+          fullConv ? this.fetchComments(ticketId) : Promise.resolve(null),
+        ]);
+        if (this.popup !== popup) return;
+        // Append into the existing body without clobbering the fallback note.
+        this.renderPopupContent(body, ticketRes, commentsRes, theme, /*append=*/true);
+      } catch (e) {
+        if (this.popup !== popup) return;
+        const err = document.createElement("div");
+        err.style.cssText = `color:#d33;font-style:italic;padding:14px 16px;`;
+        err.textContent = `Couldn't load: ${e?.message || String(e)}`;
+        body.appendChild(err);
       }
     }
 
@@ -1332,8 +1471,8 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
      * Metadata is collapsed onto a single horizontal strip so the
      * conversation gets the bulk of vertical space.
      */
-    renderPopupContent(body, ticketRes, commentsRes, theme) {
-      body.innerHTML = "";
+    renderPopupContent(body, ticketRes, commentsRes, theme, append = false) {
+      if (!append) body.innerHTML = "";
       const t = ticketRes?.ticket || {};
       const users = new Map((ticketRes?.users || []).map(u => [u.id, u]));
       const orgs = new Map((ticketRes?.organizations || []).map(o => [o.id, o]));
@@ -1774,18 +1913,27 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       if (!m || m[1] !== fetchAccumulator.viewId) {
         return origFetch(input, init);
       }
+      console.log("[zvt-tickets] intercepted execute fetch", { url, viewId: m[1] });
       const response = await origFetch(input, init);
-      if (!response.ok) return response;
+      if (!response.ok) {
+        console.log("[zvt-tickets] execute response not ok, passing through", response.status);
+        return response;
+      }
       const ct = response.headers.get("content-type") || "";
-      if (!ct.includes("application/json")) return response;
+      if (!ct.includes("application/json")) {
+        console.log("[zvt-tickets] execute response non-JSON, passing through");
+        return response;
+      }
       try {
         const data = await response.clone().json();
         return mergeExecuteResponse(data, response);
       } catch (e) {
-        return response;   // best-effort — never break the page
+        console.warn("[zvt-tickets] merge failed, passing through", e);
+        return response;
       }
     };
     fetchAccumulator.installed = true;
+    console.log("[zvt-tickets] fetch hook installed");
   }
 
   function rowTicketId(row) {
@@ -1848,6 +1996,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       try { fetchAccumulator.onAccumulate(added, fetchAccumulator.accumulatedRows.length); }
       catch (e) {}
     }
+    console.log("[zvt-tickets] returning merged response with", merged.rows.length, "rows");
     return new Response(JSON.stringify(merged), {
       status: originalResponse.status,
       statusText: originalResponse.statusText,
@@ -1891,7 +2040,12 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       installFetchHook();
       fetchAccumulator.enabled = true;
       resetAccumulator(this.currentViewId);
+      console.log("[zvt-tickets] InfiniteScroll attached", {
+        viewId: this.currentViewId,
+        scrollContainer: this.scrollContainer,
+      });
       fetchAccumulator.onAccumulate = (added, total) => {
+        console.log("[zvt-tickets] accumulator merged page", { added, total });
         if (this.loadingEl) {
           this.loadingEl.textContent = `Loaded ${added} more (${total} total) — scroll for more`;
           setTimeout(() => this.removeLoadingIndicator(), 1500);
