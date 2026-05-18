@@ -568,42 +568,18 @@
     const h = settings.ticketHover;
     if (!h?.enhanced) return "";
 
-    // When sticky is on, our HoverPreviewEnhancer fully replaces
-    // Zendesk's tooltip. We use visibility:hidden + pointer-events:none
-    // instead of display:none so Zendesk's tooltip still occupies its
-    // computed position — that lets us read getBoundingClientRect off
-    // it to place our own popup where Zendesk would have placed its
-    // native preview. The user never sees the Zendesk one.
-    if (h.sticky) {
-      return `
+    // When enhanced is on, our HoverPreviewEnhancer fully replaces
+    // Zendesk's tooltip. Hide Zendesk's via visibility:hidden +
+    // pointer-events:none (NOT display:none) so the original still
+    // occupies its computed layout position — that lets us read
+    // getBoundingClientRect off it to place our popup where Zendesk
+    // would have placed its native preview. The user never sees it.
+    return `
 [data-test-id="ticket_table_tooltip"]:not([data-zvt-hover-popup]),
 [data-garden-id="modals.tooltip_dialog.backdrop"] {
   visibility: hidden !important;
   pointer-events: none !important;
 }
-      `.trim();
-    }
-
-    // Without sticky: just resize Zendesk's built-in tooltip in place.
-    const w = Math.round(h.maxWidthPx || Z.DEFAULT_TICKET_HOVER.maxWidthPx);
-    const vh = Math.round(h.maxHeightVh || Z.DEFAULT_TICKET_HOVER.maxHeightVh);
-    const scrollCommentsBlock = h.scrollComments
-      ? `[data-test-id="ticket_table_tooltip-comments"] {
-  max-height: calc(${vh}vh - 240px) !important;
-  overflow-y: auto !important;
-}`
-      : "";
-    return `
-[data-test-id="ticket_table_tooltip"] {
-  max-width: ${w}px !important;
-  min-width: ${Math.min(w, 480)}px !important;
-  max-height: ${vh}vh !important;
-}
-[data-garden-id="modals.tooltip_dialog.body"] {
-  max-height: calc(${vh}vh - 60px) !important;
-  overflow-y: auto !important;
-}
-${scrollCommentsBlock}
     `.trim();
   }
 
@@ -1811,6 +1787,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
   class InfiniteScroll {
     constructor(table) {
       this.table = table;
+      this.tbody = table.querySelector(TICKET_SELECTORS.tbody);
       this.scrollContainer = null;
       this.boundScroll = () => this.onScroll();
       this.lastClickAt = 0;
@@ -1819,13 +1796,20 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       this.attached = false;
       this.currentViewId = null;
       this.lastUrlPath = window.location.pathname;
-      this.urlWatchTimer = 0;
       this.routeChecker = null;
+      // Accumulated cloned rows from previous pages. These get prepended
+      // to the tbody after Zendesk renders a new page. They are read-only
+      // HTML snapshots (no React handlers) but anchor clicks still work
+      // for navigation. Stored in DOM order (oldest first).
+      this.clonedRows = [];
+      this.clonedTicketIds = new Set();
+      this.tbodyObserver = null;
+      this.expectedReplace = false;
     }
     attach() {
       if (this.attached) return;
       this.currentViewId = this.getViewIdFromUrl();
-      if (!this.currentViewId) return;   // not on a filter page; nothing to do
+      if (!this.currentViewId) return;
 
       this.scrollContainer = this.findScrollContainer();
       if (!this.scrollContainer) return;
@@ -1837,19 +1821,20 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       });
       pageHookBridge.onMerged = ({ added, total }) => {
         console.log("[zvt-tickets] page-hook merged", { added, total });
-        if (this.loadingEl) {
-          this.loadingEl.textContent = `Loaded ${added} more (${total} total) — scroll for more`;
-          setTimeout(() => this.removeLoadingIndicator(), 1500);
-        }
       };
       pageHookBridge.onIntercepted = (info) => {
-        // Useful for diagnosing; cheap.
         console.log("[zvt-tickets] page-hook intercepted", info);
       };
 
+      // Watch tbody for the row-replacement Zendesk does on page change.
+      // When we see rows added AFTER we expected a replace, prepend our
+      // cloned rows from previous pages.
+      this.tbodyObserver = new MutationObserver((muts) => this.onTbodyMutation(muts));
+      if (this.tbody) {
+        this.tbodyObserver.observe(this.tbody, { childList: true });
+      }
+
       this.scrollContainer.addEventListener("scroll", this.boundScroll, { passive: true });
-      // Watch for SPA navigation so we reset the accumulator when the
-      // user switches to a different view.
       this.routeChecker = setInterval(() => {
         if (window.location.pathname !== this.lastUrlPath) {
           this.lastUrlPath = window.location.pathname;
@@ -1857,6 +1842,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
           if (newViewId !== this.currentViewId) {
             this.currentViewId = newViewId;
             configurePageHook(true, newViewId);
+            this.resetClonedRows();
           }
         }
       }, 1000);
@@ -1869,6 +1855,10 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       this.scrollContainer = null;
       this.attached = false;
       this.removeLoadingIndicator();
+      this.tbodyObserver?.disconnect();
+      this.tbodyObserver = null;
+      this.expectedReplace = false;
+      this.removeAllClonedRows();
       if (this.routeChecker) { clearInterval(this.routeChecker); this.routeChecker = null; }
       configurePageHook(false, this.currentViewId);
       pageHookBridge.onMerged = null;
@@ -1896,9 +1886,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       const container = this.scrollContainer;
       const threshold = ar.bottomThresholdPx || Z.DEFAULT_TICKET_PAGINATION.bottomThresholdPx;
       const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-      if (distanceFromBottom > threshold) {
-        return;
-      }
+      if (distanceFromBottom > threshold) return;
       if (Date.now() - this.lastClickAt < this.minClickInterval) return;
 
       const nextBtn = document.querySelector(TICKET_SELECTORS.paginateNext);
@@ -1909,10 +1897,143 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       }
       this.lastClickAt = Date.now();
       this.showLoading();
-      // Click Next; Zendesk fetches the next page; our fetch hook
-      // intercepts and merges into the accumulator; React re-renders
-      // with all accumulated tickets present, fully interactive.
+      // Snapshot the currently-rendered native rows BEFORE clicking Next,
+      // so we can prepend them above Zendesk's replacement render. Native
+      // rows we already snapshotted from earlier pages stay where they
+      // are (data-zvt-cloned marker).
+      this.snapshotCurrentNativeRows();
+      this.expectedReplace = true;
       nextBtn.click();
+    }
+
+    /**
+     * Snapshot every currently-rendered native row that we haven't
+     * already cloned. Native rows are tr[data-test-id="generic-table-row"]
+     * — group rows (priority headers etc) are skipped because they
+     * re-flow naturally when accumulated rows interleave.
+     */
+    snapshotCurrentNativeRows() {
+      if (!this.tbody) return;
+      const nativeRows = this.tbody.querySelectorAll(
+        `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
+      );
+      for (const row of nativeRows) {
+        const id = this.rowTicketId(row);
+        if (id == null) continue;
+        if (this.clonedTicketIds.has(id)) continue;
+        const clone = row.cloneNode(true);
+        clone.setAttribute("data-zvt-cloned", "1");
+        clone.setAttribute("data-zvt-ticket-id", String(id));
+        // Mark visually so user knows older rows are read-only.
+        clone.style.opacity = "0.85";
+        // Disable inputs in cloned rows — they wouldn't work anyway and
+        // a half-working checkbox is worse than no checkbox.
+        clone.querySelectorAll("input, button").forEach((el) => {
+          el.setAttribute("disabled", "");
+          el.style.pointerEvents = "none";
+        });
+        this.clonedRows.push(clone);
+        this.clonedTicketIds.add(id);
+      }
+      console.log("[zvt-tickets] snapshotted", this.clonedRows.length, "cloned rows");
+    }
+
+    rowTicketId(row) {
+      const anchor = row.querySelector(TICKET_SELECTORS.ticketAnchor);
+      if (anchor) {
+        const m = anchor.getAttribute("href")?.match(/\/agent\/tickets\/(\d+)/);
+        if (m) return Number(m[1]);
+      }
+      const idCell = row.querySelector(TICKET_SELECTORS.idCell);
+      if (idCell) {
+        const m = (idCell.innerText || "").match(/#(\d+)/);
+        if (m) return Number(m[1]);
+      }
+      return null;
+    }
+
+    /**
+     * MutationObserver callback. When Zendesk replaces the tbody's
+     * children (the row-replacement that happens on page change), find
+     * the first native row and prepend our cloned rows above it. Skip
+     * mutations we caused ourselves (clonedRows already in tbody).
+     */
+    onTbodyMutation(muts) {
+      if (!this.expectedReplace) return;
+      // Only react to mutations that added new native rows (not our clones).
+      let nativeAdded = false;
+      for (const mut of muts) {
+        for (const node of mut.addedNodes) {
+          if (node?.matches?.(`${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`)) {
+            nativeAdded = true;
+            break;
+          }
+        }
+        if (nativeAdded) break;
+      }
+      if (!nativeAdded) return;
+
+      // De-dupe: if Zendesk's new render already contains a ticket we
+      // also have in our cloned rows, prefer the native one (drop the
+      // clone). Match by ticket ID.
+      this.expectedReplace = false;
+      this.prependClonedRows();
+    }
+
+    prependClonedRows() {
+      if (!this.tbody || !this.clonedRows.length) return;
+
+      // Drop clones whose ticket ID now appears as a native row.
+      const nativeIds = new Set();
+      this.tbody.querySelectorAll(
+        `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
+      ).forEach((r) => {
+        const id = this.rowTicketId(r);
+        if (id != null) nativeIds.add(id);
+      });
+      const survivingClones = this.clonedRows.filter((c) => {
+        const id = Number(c.getAttribute("data-zvt-ticket-id"));
+        if (nativeIds.has(id)) {
+          this.clonedTicketIds.delete(id);
+          return false;
+        }
+        return true;
+      });
+      this.clonedRows = survivingClones;
+
+      // Find the first native row in the current tbody and insert all
+      // surviving clones before it. If there's no native row (rare),
+      // append to tbody.
+      const firstNative = this.tbody.querySelector(
+        `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
+      );
+      const anchor = firstNative || null;
+      for (const clone of this.clonedRows) {
+        // If clone is already in DOM (re-inserted from a prior pass),
+        // we still need to move it to the top — DOM nodes can only
+        // exist in one place, so insertBefore moves it.
+        this.tbody.insertBefore(clone, anchor);
+      }
+      console.log("[zvt-tickets] prepended", this.clonedRows.length, "cloned rows above current page");
+
+      if (this.loadingEl) {
+        const total = this.clonedRows.length + (this.tbody.querySelectorAll(
+          `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
+        ).length);
+        this.loadingEl.textContent = `${total} tickets loaded — scroll for more`;
+        setTimeout(() => this.removeLoadingIndicator(), 1500);
+      }
+    }
+
+    resetClonedRows() {
+      this.removeAllClonedRows();
+      this.clonedRows = [];
+      this.clonedTicketIds.clear();
+    }
+
+    removeAllClonedRows() {
+      if (!this.tbody) return;
+      this.tbody.querySelectorAll("[data-zvt-cloned]").forEach((el) => el.remove());
     }
     showLoading() {
       if (!this.loadingEl) {
@@ -1950,7 +2071,10 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
 
   function syncHoverEnhancer() {
     const h = settings.ticketHover;
-    const want = !!(settings.ticketPrefs?.enabled && h?.enhanced && h?.sticky);
+    // Our 2-pane popup replaces Zendesk's tooltip whenever enhanced is on.
+    // (Previously also required sticky; that was confusing — sticky now
+    // only controls the dismiss behaviour, not whether our popup runs.)
+    const want = !!(settings.ticketPrefs?.enabled && h?.enhanced);
     if (want) {
       if (!hoverEnhancer) hoverEnhancer = new HoverPreviewEnhancer();
       hoverEnhancer.start();
