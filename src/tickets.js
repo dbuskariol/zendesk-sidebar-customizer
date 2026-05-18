@@ -388,7 +388,43 @@
         ...makeEmptyObservations(),
         ...tenantData.ticketObservations,
       };
+      // One-time cleanup of pre-v0.9.1 catalog noise: prune any
+      // columnLayouts where every column has an empty label (those came
+      // from non-ticket Garden tables that passed the lax v0.9.0
+      // validator), and prune ticketColumns whose key is layout-scoped
+      // with an empty label suffix. The stricter v0.9.1 validator stops
+      // new entries like this from being created.
+      const pruned = pruneStaleObservations(observations);
+      if (pruned) {
+        observationsDirty = true;
+        scheduleObservationFlush();
+      }
     }
+  }
+
+  function pruneStaleObservations(obs) {
+    let changed = 0;
+    if (obs.columnLayouts && typeof obs.columnLayouts === "object") {
+      for (const [fp, info] of Object.entries(obs.columnLayouts)) {
+        const cols = Array.isArray(info?.columns) ? info.columns : [];
+        const labelled = cols.filter(c => (c.label || "").trim().length > 0).length;
+        if (cols.length > 0 && labelled === 0) {
+          delete obs.columnLayouts[fp];
+          changed++;
+        }
+      }
+    }
+    if (obs.ticketColumns && typeof obs.ticketColumns === "object") {
+      for (const [key, info] of Object.entries(obs.ticketColumns)) {
+        const labelEmpty = !(info?.label && info.label.trim().length > 0);
+        const layoutScoped = key.startsWith("layout:");
+        if (labelEmpty && layoutScoped) {
+          delete obs.ticketColumns[key];
+          changed++;
+        }
+      }
+    }
+    return changed;
   }
 
   /* ========================== stylesheet builders ==================== */
