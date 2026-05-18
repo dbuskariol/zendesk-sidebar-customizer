@@ -1021,12 +1021,16 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
    *   our own popup that we fully control. No React fighting, no
    *   flicker, sticky by design.
    *
-   * Behaviour:
+   * Behaviour (hover-bridge):
    *   - Mouseenter on a ticket row → 400ms debounce → fetch ticket +
-   *     comments via /api/v2 → render in our popup positioned next to
-   *     the row.
-   *   - Popup stays open until user clicks outside OR presses Esc OR
-   *     hovers a different row.
+   *     comments via /api/v2 → render in our popup positioned where
+   *     Zendesk would have put its native preview.
+   *   - Popup stays open while the mouse is on EITHER the row OR the
+   *     popup itself. Hover-bridges this with a 250ms grace period for
+   *     the trip between them.
+   *   - When the mouse leaves both, popup closes after the grace period.
+   *   - Hovering a different row updates the popup to that row's ticket.
+   *   - Click outside or Esc dismisses immediately.
    *   - Per-ticket 5-minute cache so re-hovering doesn't re-fetch.
    */
   class HoverPreviewEnhancer {
@@ -1034,11 +1038,13 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       this.popup = null;
       this.popupAnchorRow = null;
       this.pendingHoverTimer = 0;
+      this.closeTimer = 0;
+      this.closeGraceMs = 250;
       this.boundOver = (e) => this.onOver(e);
       this.boundOut = (e) => this.onOut(e);
       this.boundOutsideClick = (e) => this.onOutsideClick(e);
       this.boundKeydown = (e) => this.onKeydown(e);
-      this.ticketCache = new Map();    // ticketId → { data, at }
+      this.ticketCache = new Map();
       this.commentCache = new Map();
       this.cacheTtlMs = 300_000;
       this.hoverDelayMs = 400;
@@ -1058,16 +1064,28 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       document.removeEventListener("keydown", this.boundKeydown, true);
       this.dismiss();
       this.cancelPending();
+      this.cancelClose();
       this.ticketCache.clear();
       this.commentCache.clear();
     }
 
     onOver(e) {
+      // Mouse entered SOMETHING. Two cases:
+      //   (a) The popup itself — cancel any pending close.
+      //   (b) A ticket row — show / re-target the popup.
+      if (this.popup && this.popup.contains(e.target)) {
+        this.cancelClose();
+        return;
+      }
       const row = e.target?.closest?.(TICKET_SELECTORS.dataRow);
       if (!row) return;
-      // Already showing for this row — do nothing.
-      if (this.popupAnchorRow === row) return;
-      // Schedule a new popup after debounce.
+      // Always cancel any pending close — we're hovering something useful.
+      this.cancelClose();
+      // Same row as currently shown — nothing to do.
+      if (this.popupAnchorRow === row && this.popup) return;
+      // Schedule a new popup after debounce. If popup already exists for
+      // a different row, dismiss it during the debounce so we don't show
+      // a stale preview while waiting.
       this.cancelPending();
       this.pendingHoverTimer = setTimeout(() => {
         this.pendingHoverTimer = 0;
@@ -1076,12 +1094,28 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     }
 
     onOut(e) {
-      // Cancel pending popup if user moves away before it fires.
-      // Once popup is open, mouseout doesn't dismiss — only click-outside / Esc.
-      if (this.popup) return;
-      const row = e.target?.closest?.(TICKET_SELECTORS.dataRow);
-      if (!row) return;
+      // The relatedTarget tells us where the mouse is heading next.
+      const to = e.relatedTarget;
+      const leftRow = !!e.target?.closest?.(TICKET_SELECTORS.dataRow);
+      const leftPopup = !!(this.popup && e.target && this.popup.contains(e.target));
+      if (!leftRow && !leftPopup) return;
+
+      // If heading INTO the popup or INTO any ticket row (incl. the same one), keep open.
+      if (to && this.popup && this.popup.contains(to)) return;
+      if (to && to.closest?.(TICKET_SELECTORS.dataRow)) return;
+
+      // Otherwise the mouse genuinely left the hover region.
+      // Cancel a debounced show (the popup hasn't appeared yet).
       this.cancelPending();
+      // If popup is open, schedule a close after the grace period so a
+      // quick re-entry (e.g. brushing past the popup edge) doesn't dismiss.
+      if (this.popup) {
+        this.cancelClose();
+        this.closeTimer = setTimeout(() => {
+          this.closeTimer = 0;
+          this.dismiss();
+        }, this.closeGraceMs);
+      }
     }
 
     onOutsideClick(e) {
@@ -1100,6 +1134,12 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
         this.pendingHoverTimer = 0;
       }
     }
+    cancelClose() {
+      if (this.closeTimer) {
+        clearTimeout(this.closeTimer);
+        this.closeTimer = 0;
+      }
+    }
 
     async showFor(row) {
       const ticketId = this.extractTicketId(row);
@@ -1107,14 +1147,29 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       // Dismiss previous popup before showing a new one.
       this.dismiss();
 
-      const rect = row.getBoundingClientRect();
-      const popup = this.createPopup(rect, ticketId);
+      // Sample theme colors from the page at show time, so we match
+      // whatever Zendesk theme the user is using (light / dark / branded).
+      const theme = getThemeColors();
+
+      // Use Zendesk's own tooltip position when it's available — the CSS
+      // hides it via visibility:hidden, which keeps it measurable but
+      // invisible to the user. That way our popup lands exactly where
+      // Zendesk would have put its native preview.
+      let positionRect = null;
+      const zdTooltip = document.querySelector('[data-test-id="ticket_table_tooltip"]:not([data-zvt-hover-popup])');
+      if (zdTooltip) {
+        const r = zdTooltip.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) positionRect = r;
+      }
+      if (!positionRect) positionRect = row.getBoundingClientRect();
+
+      const popup = this.createPopup(ticketId, theme);
       this.popup = popup;
       this.popupAnchorRow = row;
       document.body.appendChild(popup);
-      this.repositionPopup(popup, rect);
+      this.repositionPopup(popup, positionRect);
 
-      this.populatePopup(popup, ticketId);
+      this.populatePopup(popup, ticketId, theme);
     }
 
     extractTicketId(row) {
@@ -1132,7 +1187,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       return null;
     }
 
-    createPopup(rowRect, ticketId) {
+    createPopup(ticketId, theme) {
       const popup = document.createElement("div");
       popup.setAttribute("data-zvt-hover-popup", "1");
       const maxW = settings.ticketHover?.maxWidthPx || 720;
@@ -1142,31 +1197,31 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
         width: `${maxW}px`,
         maxWidth: "calc(100vw - 32px)",
         maxHeight: `${maxH}vh`,
-        background: "white",
-        border: "1px solid rgba(0,0,0,0.15)",
+        background: theme.popupBg,
+        color: theme.popupFg,
+        border: `1px solid ${theme.borderColor}`,
         borderRadius: "8px",
-        boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+        boxShadow: theme.shadow,
         zIndex: "2147483646",
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
         font: "13px -apple-system, system-ui, BlinkMacSystemFont, sans-serif",
-        color: "#222",
       });
 
       const header = document.createElement("div");
       Object.assign(header.style, {
         display: "flex", alignItems: "center", gap: "8px",
         padding: "8px 12px",
-        borderBottom: "1px solid rgba(0,0,0,0.08)",
-        background: "rgba(0,0,0,0.025)",
+        borderBottom: `1px solid ${theme.borderColor}`,
+        background: theme.headerBg,
         flexShrink: "0",
       });
       const title = document.createElement("a");
       title.href = `/agent/tickets/${ticketId}`;
       title.textContent = `Ticket #${ticketId}`;
       Object.assign(title.style, {
-        fontWeight: "600", color: "#1f73b7", textDecoration: "none",
+        fontWeight: "600", color: theme.linkColor, textDecoration: "none",
       });
       header.appendChild(title);
       const pinned = document.createElement("span");
@@ -1174,7 +1229,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       Object.assign(pinned.style, {
         marginLeft: "auto",
         padding: "2px 8px", borderRadius: "10px",
-        background: "rgba(0,0,0,0.78)", color: "#fff",
+        background: theme.pinnedBg, color: theme.pinnedFg,
         font: "11px system-ui, sans-serif",
       });
       header.appendChild(pinned);
@@ -1187,7 +1242,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
         marginLeft: "6px",
         width: "24px", height: "24px", lineHeight: "1",
         border: "none", background: "transparent",
-        color: "#666", cursor: "pointer", fontSize: "14px",
+        color: theme.mutedFg, cursor: "pointer", fontSize: "14px",
       });
       closeBtn.addEventListener("click", (e) => { e.stopPropagation(); this.dismiss(); });
       header.appendChild(closeBtn);
@@ -1198,71 +1253,82 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       Object.assign(body.style, {
         padding: "12px 16px", overflowY: "auto", flexGrow: "1",
       });
-      body.innerHTML = `<div style="color:#888;font-style:italic;padding:8px 0;">Loading ticket #${escapeText(ticketId)}…</div>`;
+      body.innerHTML = `<div style="color:${theme.mutedFg};font-style:italic;padding:8px 0;">Loading ticket #${escapeText(ticketId)}…</div>`;
       popup.appendChild(body);
 
       return popup;
     }
 
-    repositionPopup(popup, rowRect) {
+    repositionPopup(popup, anchorRect) {
       const margin = 8;
       const w = popup.offsetWidth || (settings.ticketHover?.maxWidthPx || 720);
       const h = popup.offsetHeight || 400;
-      // Prefer to the right of the row; if no room, flip to left.
-      let left = rowRect.right + margin;
-      if (left + w > window.innerWidth - margin) {
-        left = Math.max(margin, rowRect.left - w - margin);
+
+      // Use Zendesk's actual tooltip position as the primary anchor when
+      // it was supplied; only fall back to row-adjacent positioning if
+      // not. anchorRect's coordinates are already in viewport space.
+      let left, top;
+
+      // Prefer the same top as the anchor.
+      top = anchorRect.top;
+      // Prefer left-aligned with anchor's left edge when anchor is the
+      // Zendesk tooltip (it positioned itself sensibly); for row-rect
+      // fallback, position to the LEFT of the row (Zendesk's default for
+      // ticket queues) with right-flip if no room.
+      const isRowFallback = anchorRect.height < 80;   // rows are ~30-50px tall
+      if (isRowFallback) {
+        left = anchorRect.left - w - margin;
+        if (left < margin) left = anchorRect.right + margin;  // flip right
+      } else {
+        left = anchorRect.left;
       }
+
+      // Clamp to viewport.
+      if (left + w > window.innerWidth - margin) left = window.innerWidth - w - margin;
       if (left < margin) left = margin;
-      // Vertically aligned to row top; clamp to viewport.
-      let top = rowRect.top;
-      if (top + h > window.innerHeight - margin) {
-        top = Math.max(margin, window.innerHeight - h - margin);
-      }
+      if (top + h > window.innerHeight - margin) top = window.innerHeight - h - margin;
       if (top < margin) top = margin;
       popup.style.left = `${left}px`;
       popup.style.top = `${top}px`;
     }
 
-    async populatePopup(popup, ticketId) {
+    async populatePopup(popup, ticketId, theme) {
       const body = popup.querySelector('[data-zvt-popup-body]');
       if (!body) return;
       const fullConv = !!settings.ticketHover?.fullConversation;
 
       try {
-        // Always fetch ticket details. Fetch comments only if user opted in.
         const [ticketRes, commentsRes] = await Promise.all([
           this.fetchTicket(ticketId),
           fullConv ? this.fetchComments(ticketId) : Promise.resolve(null),
         ]);
-        // If user moved on or dismissed during the fetch, do nothing.
         if (this.popup !== popup) return;
-        this.renderPopupContent(body, ticketRes, commentsRes);
+        this.renderPopupContent(body, ticketRes, commentsRes, theme);
       } catch (e) {
         if (this.popup !== popup) return;
         body.innerHTML = `<div style="color:#d33;font-style:italic;padding:8px 0;">Couldn't load: ${escapeText(e?.message || String(e))}</div>`;
       }
     }
 
-    renderPopupContent(body, ticketRes, commentsRes) {
+    renderPopupContent(body, ticketRes, commentsRes, theme) {
       body.innerHTML = "";
       const t = ticketRes?.ticket || {};
       const users = new Map((ticketRes?.users || []).map(u => [u.id, u]));
       const orgs = new Map((ticketRes?.organizations || []).map(o => [o.id, o]));
 
-      // --- Subject ---
+      // Subject
       const subjEl = document.createElement("div");
-      subjEl.style.cssText = "font-size:15px;font-weight:600;margin-bottom:8px;color:#111;line-height:1.3;";
+      subjEl.style.cssText = `font-size:15px;font-weight:600;margin-bottom:8px;color:${theme.popupFg};line-height:1.3;`;
       subjEl.textContent = t.subject || "(no subject)";
       body.appendChild(subjEl);
 
-      // --- Metadata badges ---
+      // Metadata badges
       const metaRow = document.createElement("div");
       metaRow.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;font-size:11px;margin-bottom:12px;";
-      const badge = (label, color) => {
+      const badge = (label) => {
         const s = document.createElement("span");
         s.textContent = label;
-        s.style.cssText = `padding:2px 8px;border-radius:10px;background:${color || "rgba(0,0,0,0.06)"};color:#333;`;
+        s.style.cssText = `padding:2px 8px;border-radius:10px;background:${theme.subtleBg};color:${theme.popupFg};`;
         return s;
       };
       if (t.status)   metaRow.appendChild(badge(`Status: ${t.status}`));
@@ -1280,17 +1346,17 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       }
       body.appendChild(metaRow);
 
-      // --- Requester / assignee ---
+      // People
       const peopleRow = document.createElement("div");
-      peopleRow.style.cssText = "display:flex;gap:14px;font-size:11px;color:#555;margin-bottom:12px;flex-wrap:wrap;";
+      peopleRow.style.cssText = `display:flex;gap:14px;font-size:11px;color:${theme.mutedFg};margin-bottom:12px;flex-wrap:wrap;`;
       const person = (label, user) => {
         if (!user) return null;
         const wrap = document.createElement("div");
         const lbl = document.createElement("div");
-        lbl.style.cssText = "color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;";
+        lbl.style.cssText = `color:${theme.mutedFg};font-size:10px;text-transform:uppercase;letter-spacing:0.04em;`;
         lbl.textContent = label;
         const val = document.createElement("div");
-        val.style.cssText = "color:#222;font-weight:500;font-size:12px;";
+        val.style.cssText = `color:${theme.popupFg};font-weight:500;font-size:12px;`;
         val.textContent = user.name || `User #${user.id}`;
         if (user.email) val.title = user.email;
         wrap.appendChild(lbl);
@@ -1308,70 +1374,71 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       }
       if (org) {
         const wrap = document.createElement("div");
-        wrap.innerHTML = `<div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">Organization</div>
-                          <div style="color:#222;font-weight:500;font-size:12px;">${escapeText(org.name)}</div>`;
+        wrap.innerHTML = `<div style="color:${theme.mutedFg};font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">Organization</div>
+                          <div style="color:${theme.popupFg};font-weight:500;font-size:12px;">${escapeText(org.name)}</div>`;
         peopleRow.appendChild(wrap);
       }
       if (peopleRow.children.length) body.appendChild(peopleRow);
 
-      // --- Description / first comment ---
+      // Description
       if (t.description) {
         const heading = document.createElement("div");
-        heading.style.cssText = "font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.04em;margin:8px 0 6px;";
+        heading.style.cssText = `font-size:11px;color:${theme.mutedFg};text-transform:uppercase;letter-spacing:0.04em;margin:8px 0 6px;`;
         heading.textContent = "Description";
         body.appendChild(heading);
         const descEl = document.createElement("div");
-        descEl.style.cssText = "padding:8px 10px;background:rgba(0,0,0,0.025);border-radius:6px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word;color:#333;margin-bottom:12px;";
+        descEl.style.cssText = `padding:8px 10px;background:${theme.subtleBg};border-radius:6px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word;color:${theme.popupFg};margin-bottom:12px;`;
         descEl.textContent = t.description;
         body.appendChild(descEl);
       }
 
-      // --- Tags ---
+      // Tags
       if (Array.isArray(t.tags) && t.tags.length) {
         const tagRow = document.createElement("div");
         tagRow.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;";
         for (const tag of t.tags) {
           const s = document.createElement("span");
           s.textContent = tag;
-          s.style.cssText = "padding:1px 8px;border-radius:8px;background:#eef2f7;color:#384b5e;font-size:11px;";
+          s.style.cssText = `padding:1px 8px;border-radius:8px;background:${theme.tagBg};color:${theme.tagFg};font-size:11px;`;
           tagRow.appendChild(s);
         }
         body.appendChild(tagRow);
       }
 
-      // --- Conversation (only if user opted in for fullConversation) ---
+      // Conversation
       if (commentsRes) {
         const heading = document.createElement("div");
-        heading.style.cssText = "font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.04em;margin:8px 0 6px;display:flex;gap:8px;align-items:center;";
+        heading.style.cssText = `font-size:11px;color:${theme.mutedFg};text-transform:uppercase;letter-spacing:0.04em;margin:8px 0 6px;display:flex;gap:8px;align-items:center;`;
         const comments = commentsRes?.comments || [];
         const commentUsers = new Map((commentsRes?.users || []).map(u => [u.id, u]));
-        heading.innerHTML = `<span>Conversation</span><span style="text-transform:none;letter-spacing:normal;color:#aaa;font-weight:400;">${comments.length} comment${comments.length === 1 ? "" : "s"}</span>`;
+        heading.innerHTML = `<span>Conversation</span><span style="text-transform:none;letter-spacing:normal;color:${theme.mutedFg};opacity:0.8;font-weight:400;">${comments.length} comment${comments.length === 1 ? "" : "s"}</span>`;
         body.appendChild(heading);
         if (!comments.length) {
           const empty = document.createElement("div");
-          empty.style.cssText = "color:#888;font-style:italic;font-size:12px;";
+          empty.style.cssText = `color:${theme.mutedFg};font-style:italic;font-size:12px;`;
           empty.textContent = "(no comments yet)";
           body.appendChild(empty);
         } else {
           const list = document.createElement("div");
           list.style.cssText = "display:flex;flex-direction:column;gap:8px;";
-          for (const c of comments) list.appendChild(renderCommentCard(c, commentUsers));
+          for (const c of comments) list.appendChild(renderCommentCard(c, commentUsers, theme));
           body.appendChild(list);
         }
       }
 
-      // --- Footer: link to full ticket ---
+      // Footer
       const footer = document.createElement("div");
-      footer.style.cssText = "margin-top:12px;padding-top:8px;border-top:1px solid rgba(0,0,0,0.08);text-align:right;";
+      footer.style.cssText = `margin-top:12px;padding-top:8px;border-top:1px solid ${theme.borderColor};text-align:right;`;
       const linkA = document.createElement("a");
       linkA.href = `/agent/tickets/${t.id || ""}`;
       linkA.textContent = "Open full ticket →";
-      linkA.style.cssText = "color:#1f73b7;text-decoration:none;font-size:12px;";
+      linkA.style.cssText = `color:${theme.linkColor};text-decoration:none;font-size:12px;`;
       footer.appendChild(linkA);
       body.appendChild(footer);
     }
 
     dismiss() {
+      this.cancelClose();
       if (this.popup?.parentNode) this.popup.parentNode.removeChild(this.popup);
       this.popup = null;
       this.popupAnchorRow = null;
@@ -1404,16 +1471,15 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     }
   }
 
-  // Render one comment card. Shared by the popup body.
-  function renderCommentCard(comment, usersById) {
+  function renderCommentCard(comment, usersById, theme) {
     const card = document.createElement("div");
-    card.style.cssText = "padding:8px 10px;background:rgba(0,0,0,0.025);border-radius:6px;";
+    card.style.cssText = `padding:8px 10px;background:${theme.subtleBg};border-radius:6px;`;
     const user = usersById.get(comment.author_id);
     const isInternal = comment.public === false;
     const meta = document.createElement("div");
-    meta.style.cssText = "font-size:11px;color:#666;margin-bottom:6px;display:flex;gap:8px;align-items:center;";
+    meta.style.cssText = `font-size:11px;color:${theme.mutedFg};margin-bottom:6px;display:flex;gap:8px;align-items:center;`;
     const who = document.createElement("strong");
-    who.style.color = "#222";
+    who.style.color = theme.popupFg;
     who.textContent = user?.name || "Unknown";
     meta.appendChild(who);
     const when = document.createElement("span");
@@ -1428,10 +1494,94 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     }
     card.appendChild(meta);
     const bodyEl = document.createElement("div");
-    bodyEl.style.cssText = "font-size:12px;line-height:1.5;color:#222;word-wrap:break-word;";
+    bodyEl.style.cssText = `font-size:12px;line-height:1.5;color:${theme.popupFg};word-wrap:break-word;`;
     bodyEl.innerHTML = sanitizeHtml(comment.html_body || comment.body || "");
     card.appendChild(bodyEl);
     return card;
+  }
+
+  /**
+   * Sample colors from the actual Zendesk page so our popup matches
+   * whatever theme the user is using (light / dark / branded). Read at
+   * popup-show time so theme switches mid-session take effect.
+   *
+   * Reference elements (in order of preference):
+   *   - Zendesk's own ticket-table tooltip if currently in DOM (best
+   *     match — same widget family)
+   *   - The ticket table itself
+   *   - The body
+   *
+   * The header background is read from the table's thead for a slightly
+   * different shade. Border / muted fg are derived from luminance
+   * (dark page → light translucent borders, light page → dark).
+   */
+  function getThemeColors() {
+    const body = document.body;
+    const table = document.querySelector('table[data-zvt-ticket-table]')
+               || document.querySelector('tbody[data-garden-id="tables.body"]')?.closest("table");
+    const thead = table?.querySelector("thead tr");
+    const zdTooltip = document.querySelector('[data-test-id="ticket_table_tooltip"]:not([data-zvt-hover-popup])');
+
+    const ref = zdTooltip || table || body;
+    const refStyle = getComputedStyle(ref);
+    const bodyStyle = getComputedStyle(body);
+    const theadStyle = thead ? getComputedStyle(thead) : refStyle;
+
+    const popupBg = pickColor(refStyle.backgroundColor) || pickColor(bodyStyle.backgroundColor) || "#ffffff";
+    const popupFg = pickColor(refStyle.color) || pickColor(bodyStyle.color) || "#222222";
+
+    const isDark = isColorDark(popupBg);
+    const borderColor = isDark ? "rgba(255,255,255,0.16)" : "rgba(0,0,0,0.12)";
+    const mutedFg    = isDark ? "rgba(255,255,255,0.62)" : "rgba(0,0,0,0.55)";
+    const headerBg   = pickColor(theadStyle.backgroundColor)
+                    || (isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.025)");
+    const subtleBg   = isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)";
+    const tagBg      = isDark ? "rgba(110,168,255,0.18)" : "#eef2f7";
+    const tagFg      = isDark ? "#bcd4ff" : "#384b5e";
+    // Link color: try sampling from a ticket link on the page; fall back
+    // to Zendesk's standard brand blue. In dark mode, lighten it.
+    let linkColor = "#1f73b7";
+    const sampleLink = document.querySelector('a[href^="/agent/tickets/"]')
+                    || document.querySelector('a[href^="/agent/filters/"]');
+    if (sampleLink) {
+      const c = pickColor(getComputedStyle(sampleLink).color);
+      if (c) linkColor = c;
+    }
+    if (isDark) {
+      // If the sampled link is too dark to read on dark bg, swap to a brighter
+      if (isColorDark(linkColor)) linkColor = "#7eb6ff";
+    }
+
+    return {
+      popupBg, popupFg, headerBg, subtleBg, borderColor, mutedFg,
+      tagBg, tagFg, linkColor,
+      pinnedBg: isDark ? "rgba(255,255,255,0.85)" : "rgba(21,26,30,0.85)",
+      pinnedFg: isDark ? "#1a1a1a" : "#ffffff",
+      shadow: isDark
+        ? "0 8px 24px rgba(0,0,0,0.65)"
+        : "0 8px 24px rgba(0,0,0,0.18)",
+    };
+  }
+
+  function pickColor(s) {
+    if (!s || s === "rgba(0, 0, 0, 0)" || s === "transparent") return null;
+    return s;
+  }
+
+  function isColorDark(s) {
+    const m = String(s || "").match(/rgba?\(([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/);
+    if (!m) {
+      // Hex fallback
+      const hex = String(s || "").match(/^#([0-9a-f]{6})$/i);
+      if (hex) {
+        const n = parseInt(hex[1], 16);
+        const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+        return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+      }
+      return false;
+    }
+    const r = parseFloat(m[1]), g = parseFloat(m[2]), b = parseFloat(m[3]);
+    return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
   }
 
   // Minimal HTML sanitiser — strips scripts/styles/iframes, on* attrs,
