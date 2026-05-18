@@ -1864,7 +1864,6 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
   class InfiniteScroll {
     constructor(table) {
       this.table = table;
-      this.tbody = table.querySelector(TICKET_SELECTORS.tbody);
       this.scrollContainer = null;
       this.boundScroll = () => this.onScroll();
       this.lastClickAt = 0;
@@ -1874,14 +1873,6 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       this.currentViewId = null;
       this.lastUrlPath = window.location.pathname;
       this.routeChecker = null;
-      // Accumulated cloned rows from previous pages. These get prepended
-      // to the tbody after Zendesk renders a new page. They are read-only
-      // HTML snapshots (no React handlers) but anchor clicks still work
-      // for navigation. Stored in DOM order (oldest first).
-      this.clonedRows = [];
-      this.clonedTicketIds = new Set();
-      this.tbodyObserver = null;
-      this.expectedReplace = false;
     }
     attach() {
       if (this.attached) return;
@@ -1898,18 +1889,14 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       });
       pageHookBridge.onMerged = ({ added, total }) => {
         console.log("[zvt-tickets] page-hook merged", { added, total });
+        if (this.loadingEl) {
+          this.loadingEl.textContent = `${total} tickets loaded - scroll for more`;
+          setTimeout(() => this.removeLoadingIndicator(), 1500);
+        }
       };
       pageHookBridge.onIntercepted = (info) => {
         console.log("[zvt-tickets] page-hook intercepted", info);
       };
-
-      // Watch tbody for the row-replacement Zendesk does on page change.
-      // When we see rows added AFTER we expected a replace, prepend our
-      // cloned rows from previous pages.
-      this.tbodyObserver = new MutationObserver((muts) => this.onTbodyMutation(muts));
-      if (this.tbody) {
-        this.tbodyObserver.observe(this.tbody, { childList: true });
-      }
 
       this.scrollContainer.addEventListener("scroll", this.boundScroll, { passive: true });
       this.routeChecker = setInterval(() => {
@@ -1919,7 +1906,6 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
           if (newViewId !== this.currentViewId) {
             this.currentViewId = newViewId;
             configurePageHook(true, newViewId);
-            this.resetClonedRows();
           }
         }
       }, 1000);
@@ -1932,10 +1918,6 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       this.scrollContainer = null;
       this.attached = false;
       this.removeLoadingIndicator();
-      this.tbodyObserver?.disconnect();
-      this.tbodyObserver = null;
-      this.expectedReplace = false;
-      this.removeAllClonedRows();
       if (this.routeChecker) { clearInterval(this.routeChecker); this.routeChecker = null; }
       configurePageHook(false, this.currentViewId);
       pageHookBridge.onMerged = null;
@@ -1974,162 +1956,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       }
       this.lastClickAt = Date.now();
       this.showLoading();
-      // Snapshot the currently-rendered native rows BEFORE clicking Next,
-      // so we can prepend them above Zendesk's replacement render. Native
-      // rows we already snapshotted from earlier pages stay where they
-      // are (data-zvt-cloned marker).
-      this.snapshotCurrentNativeRows();
-      this.expectedReplace = true;
       nextBtn.click();
-    }
-
-    /**
-     * Snapshot every currently-rendered native row that we haven't
-     * already cloned. Native rows are tr[data-test-id="generic-table-row"]
-     * — group rows (priority headers etc) are skipped because they
-     * re-flow naturally when accumulated rows interleave.
-     */
-    snapshotCurrentNativeRows() {
-      if (!this.tbody) return;
-      const nativeRows = this.tbody.querySelectorAll(
-        `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
-      );
-      for (const row of nativeRows) {
-        const id = this.rowTicketId(row);
-        if (id == null) continue;
-        if (this.clonedTicketIds.has(id)) continue;
-        const clone = row.cloneNode(true);
-        clone.setAttribute("data-zvt-cloned", "1");
-        clone.setAttribute("data-zvt-ticket-id", String(id));
-        // Mark visually so user knows older rows are read-only.
-        clone.style.opacity = "0.85";
-        // Disable inputs in cloned rows — they wouldn't work anyway and
-        // a half-working checkbox is worse than no checkbox.
-        clone.querySelectorAll("input, button").forEach((el) => {
-          el.setAttribute("disabled", "");
-          el.style.pointerEvents = "none";
-        });
-        this.clonedRows.push(clone);
-        this.clonedTicketIds.add(id);
-      }
-      console.log("[zvt-tickets] snapshotted", this.clonedRows.length, "cloned rows from", nativeRows.length, "native rows in tbody");
-    }
-
-    rowTicketId(row) {
-      const anchor = row.querySelector(TICKET_SELECTORS.ticketAnchor);
-      if (anchor) {
-        const m = anchor.getAttribute("href")?.match(/\/agent\/tickets\/(\d+)/);
-        if (m) return Number(m[1]);
-      }
-      const idCell = row.querySelector(TICKET_SELECTORS.idCell);
-      if (idCell) {
-        const m = (idCell.innerText || "").match(/#(\d+)/);
-        if (m) return Number(m[1]);
-      }
-      return null;
-    }
-
-    /**
-     * MutationObserver callback. When Zendesk replaces the tbody's
-     * children (the row-replacement that happens on page change), find
-     * the first native row and prepend our cloned rows above it. Skip
-     * mutations we caused ourselves (clonedRows already in tbody).
-     */
-    onTbodyMutation(muts) {
-      const beforeNative = this.tbody?.querySelectorAll(
-        `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
-      ).length || 0;
-      const beforeClones = this.tbody?.querySelectorAll(
-        `${TICKET_SELECTORS.dataRow}[data-zvt-cloned]`
-      ).length || 0;
-      console.log("[zvt-tickets] tbody mutation", {
-        expectedReplace: this.expectedReplace,
-        beforeNative, beforeClones,
-        snapshotted: this.clonedRows.length,
-        muts: muts.length,
-      });
-
-      if (!this.expectedReplace) return;
-      let nativeAdded = false;
-      for (const mut of muts) {
-        for (const node of mut.addedNodes) {
-          if (node?.matches?.(`${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`)) {
-            nativeAdded = true;
-            break;
-          }
-        }
-        if (nativeAdded) break;
-      }
-      if (!nativeAdded) return;
-
-      this.expectedReplace = false;
-      this.prependClonedRows();
-    }
-
-    prependClonedRows() {
-      if (!this.tbody || !this.clonedRows.length) return;
-
-      const nativeIds = new Set();
-      this.tbody.querySelectorAll(
-        `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
-      ).forEach((r) => {
-        const id = this.rowTicketId(r);
-        if (id != null) nativeIds.add(id);
-      });
-      const droppedCount = this.clonedRows.filter((c) =>
-        nativeIds.has(Number(c.getAttribute("data-zvt-ticket-id")))
-      ).length;
-      const survivingClones = this.clonedRows.filter((c) => {
-        const id = Number(c.getAttribute("data-zvt-ticket-id"));
-        if (nativeIds.has(id)) {
-          this.clonedTicketIds.delete(id);
-          return false;
-        }
-        return true;
-      });
-      this.clonedRows = survivingClones;
-
-      console.log("[zvt-tickets] prepend evaluating", {
-        nativeIdsInTbody: nativeIds.size,
-        droppedClones: droppedCount,
-        survivingClones: survivingClones.length,
-      });
-
-      const firstNative = this.tbody.querySelector(
-        `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
-      );
-      const anchor = firstNative || null;
-      for (const clone of this.clonedRows) {
-        this.tbody.insertBefore(clone, anchor);
-      }
-      const totalNative = this.tbody.querySelectorAll(
-        `${TICKET_SELECTORS.dataRow}:not([data-zvt-cloned])`
-      ).length;
-      const totalClones = this.tbody.querySelectorAll(
-        `${TICKET_SELECTORS.dataRow}[data-zvt-cloned]`
-      ).length;
-      console.log("[zvt-tickets] AFTER prepend", {
-        prependedClones: this.clonedRows.length,
-        finalTbodyNative: totalNative,
-        finalTbodyClones: totalClones,
-        finalTbodyTotal: totalNative + totalClones,
-      });
-
-      if (this.loadingEl) {
-        this.loadingEl.textContent = `${totalNative + totalClones} tickets loaded — scroll for more`;
-        setTimeout(() => this.removeLoadingIndicator(), 1500);
-      }
-    }
-
-    resetClonedRows() {
-      this.removeAllClonedRows();
-      this.clonedRows = [];
-      this.clonedTicketIds.clear();
-    }
-
-    removeAllClonedRows() {
-      if (!this.tbody) return;
-      this.tbody.querySelectorAll("[data-zvt-cloned]").forEach((el) => el.remove());
     }
     showLoading() {
       if (!this.loadingEl) {
@@ -2147,7 +1974,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
           zIndex: "2147483647",
           pointerEvents: "none",
         });
-        el.textContent = "Loading next page…";
+        el.textContent = "Loading next page\u2026";
         document.body.appendChild(el);
         this.loadingEl = el;
       }
@@ -2164,7 +1991,6 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       this.loadingEl = null;
     }
   }
-
   function syncHoverEnhancer() {
     const h = settings.ticketHover;
     // Our 2-pane popup replaces Zendesk's tooltip whenever enhanced is on.
