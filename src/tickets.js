@@ -681,16 +681,24 @@
       if (!ar?.enabled) return this.stop();
       if (ar.pauseOnSelected && this.hasSelectedRows()) return;
 
-      // Find the scoped refresh button. Audit fix #9 — no global fallback,
-      // no full-page reload. Scope to nearest ancestors, then bounding-rect
-      // proximity, then degrade.
-      const btn = findScopedRefreshButton(this.table);
-      if (!btn) {
-        console.warn("[zvt-tickets] no refresh button found near table; auto-refresh disabled for this page");
-        this.stop();
+      // Find the refresh action. The view-link strategy almost always
+      // works on /agent/filters/<id>, but the sidebar link may briefly
+      // be missing on first load or during SPA navigation — tolerate
+      // a few consecutive misses before disabling.
+      const target = findRefreshAction(this.table);
+      if (!target) {
+        this.missedTicks = (this.missedTicks || 0) + 1;
+        if (this.missedTicks === 1) {
+          console.warn("[zvt-tickets] no refresh action found this tick; will retry up to 5 times");
+        }
+        if (this.missedTicks >= 5) {
+          console.warn("[zvt-tickets] auto-refresh disabled after 5 consecutive misses (no view link or refresh button in DOM)");
+          this.stop();
+        }
         return;
       }
-      btn.click();
+      this.missedTicks = 0;
+      target.click();
       this.nextTickAt = Date.now() + ar.intervalSec * 1000;
       this.bumpIndicator();
     }
@@ -860,27 +868,34 @@
     return match ? match.parentElement : null;
   }
 
-  // Look for a refresh control near the managed table — walk up a few
-  // ancestors first (the typical Garden layout puts the refresh button in
-  // the views-list header within ~2-4 ancestors), then fall back to the
-  // closest button by bounding-box proximity. NO full-page reload.
-  function findScopedRefreshButton(table) {
-    let node = table;
-    for (let i = 0; i < 6 && node; i++, node = node.parentElement) {
-      const btn = node.querySelector?.(TICKET_SELECTORS.refreshBtn);
-      if (btn) return btn;
+  /**
+   * Locate the action that actually refreshes the current ticket list.
+   *
+   * Critical: the only "refresh" button Zendesk exposes on a ticket-list
+   * page is the views-pane header button (`views_views-list_header-refresh`).
+   * That refreshes the COUNT BADGES in the sidebar, NOT the ticket-list
+   * table contents. Clicking it does almost nothing visible to the user.
+   *
+   * The reliable way to force the ticket list to re-fetch is to re-click
+   * the currently selected view link in the sidebar (Zendesk treats that
+   * as a navigation event and re-runs the query).
+   *
+   * Priority order:
+   *   1. URL-derived view link (for /agent/filters/<id> pages)
+   *   2. Views-pane refresh button (fallback for dashboard / org / user
+   *      ticket pages where no per-view link applies; updates sidebar
+   *      counts which at least signals activity)
+   */
+  function findRefreshAction(_table) {
+    const filterMatch = window.location.pathname.match(/\/agent\/filters\/(\d+)/);
+    if (filterMatch) {
+      const viewId = filterMatch[1];
+      const link = document.querySelector(
+        `a[data-test-id="views_views-list_item-view-${viewId}"]`
+      );
+      if (link) return link;
     }
-    // Proximity fallback — globally search candidates but only accept ones
-    // whose bounding rect is within 800px horizontally of the table's rect.
-    const tableRect = table.getBoundingClientRect();
-    const candidates = document.querySelectorAll(TICKET_SELECTORS.refreshBtn);
-    let best = null, bestDist = Infinity;
-    for (const c of candidates) {
-      const r = c.getBoundingClientRect();
-      const dx = Math.abs((r.left + r.right) / 2 - (tableRect.left + tableRect.right) / 2);
-      if (dx < 800 && dx < bestDist) { best = c; bestDist = dx; }
-    }
-    return best;
+    return document.querySelector(TICKET_SELECTORS.refreshBtn) || null;
   }
 
   /* ============================ scan loop ============================ */
@@ -958,14 +973,26 @@
 
   function refreshSettings() {
     if (!profile) return;
+    // v0.9.1: the sidebar's "Extension enabled" toggle is the EXTENSION
+    // master switch — when off, every feature (sidebar AND ticket-list)
+    // must visibly turn off. Resolve sidebar prefs alongside ticket
+    // prefs and bail-with-teardown if either disables the area.
+    const sidebarPrefs = profile.resolve("prefs");
+    const ticketPrefs  = profile.resolve("ticketPrefs");
+    if (!sidebarPrefs?.enabled || !ticketPrefs?.enabled) {
+      teardown();
+      return;
+    }
     settings = {
-      ticketPrefs:       profile.resolve("ticketPrefs"),
+      ticketPrefs,
       ticketDensity:     profile.resolve("ticketDensity"),
       ticketTheme:       profile.resolve("ticketTheme"),
       ticketHide:        profile.resolve("ticketHide"),
       ticketClassifiers: profile.resolve("ticketClassifiers"),
       ticketAutoRefresh: profile.resolve("ticketAutoRefresh"),
     };
+    // If we were torn down previously, scan re-populates managed tables.
+    if (!managed.size) scanForTicketTables();
     syncAutoRefresh();
     rebuildSheets();
     // Re-annotate so colour mapping changes are visible immediately.
@@ -1007,6 +1034,16 @@
   }
 
   function scan() {
+    // Honor the same master switches as refreshSettings — the periodic
+    // scan loop should not re-create stylesheets after teardown.
+    if (profile) {
+      const sidebarPrefs = profile.resolve("prefs");
+      const ticketPrefs  = profile.resolve("ticketPrefs");
+      if (!sidebarPrefs?.enabled || !ticketPrefs?.enabled) {
+        if (managed.size || autoRefresh) teardown();
+        return;
+      }
+    }
     scanForTicketTables();
     syncAutoRefresh();
     rebuildSheets();
