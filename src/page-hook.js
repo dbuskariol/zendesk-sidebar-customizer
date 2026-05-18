@@ -33,6 +33,12 @@
   window.__ZVT_PAGE_HOOK_INSTALLED__ = true;
 
   const state = {
+    // `enabled` controls whether we RETURN a merged response. Even
+    // when disabled we still TRACK rows from every fetch — this is
+    // critical because Zendesk's initial page-load fetch fires before
+    // tickets.js (content_idle) gets a chance to enable us. If we
+    // didn't track it, we'd never have page 1's rows in our state and
+    // every merged response would drop them.
     enabled: false,
     viewId: null,
     rows: [],
@@ -71,16 +77,36 @@
     state.view = null;
   }
 
+  function extractViewIdFromUrl(url) {
+    const m = url.match(/\/api\/v2\/views\/(\d+)\/execute(?:\.json)?(?:\?|$)/);
+    return m ? m[1] : null;
+  }
+
   // Wrap fetch once. Calling fetch is a 1-or-2-arg function; we always
   // call through to the original with the exact args we received so we
   // never change the call signature.
+  //
+  // We ALWAYS pass execute.json requests through the tracker — not just
+  // when `state.enabled` is true. The tracker accumulates rows into
+  // `state.rows`. Merging behaviour (returning a synthesised response)
+  // is gated by `state.enabled`. This split is the bug fix for missing
+  // page-1: Zendesk's initial fetch happens before our isolated-world
+  // sibling has had a chance to enable us, so if we don't track it,
+  // page 1's rows never make it into state.
   const origFetch = window.fetch.bind(window);
 
   window.fetch = function(input, init) {
-    if (!state.enabled || !state.viewId) return origFetch(input, init);
     const url = typeof input === "string" ? input : (input?.url || "");
-    const m = url.match(/\/api\/v2\/views\/(\d+)\/execute(?:\.json)?(?:\?|$)/);
-    if (!m || m[1] !== state.viewId) return origFetch(input, init);
+    const urlViewId = extractViewIdFromUrl(url);
+    if (!urlViewId) return origFetch(input, init);
+
+    // Switched views? Reset state to the new view so we don't carry
+    // rows from view A into view B.
+    if (state.viewId && state.viewId !== urlViewId) {
+      resetState(urlViewId);
+    } else if (!state.viewId) {
+      state.viewId = urlViewId;
+    }
 
     return origFetch(input, init).then(async (response) => {
       if (!response.ok) {
@@ -126,13 +152,38 @@
     if (data?.view) state.view = data.view;
 
     const pageSize = data?.rows?.length || 0;
+    // Extract the page[after] cursor from the REQUEST URL so we can
+    // see what Zendesk asked for vs what came back. Helps diagnose
+    // pagination skips. We log the FULL cursor + full links.next so
+    // we can verify Zendesk's React is sending the cursor we expect.
+    let requestedCursor = null;
+    try {
+      const u = new URL(url, window.location.origin);
+      requestedCursor = u.searchParams.get("page[after]");
+    } catch (e) { /* ignore */ }
     emit("intercepted", {
       url, ok: true, json: true,
       rows: pageSize, total: state.rows.length, added,
+      requestedCursor,
+      responseHasMore: !!data?.meta?.has_more,
+      responseAfterCursor: data?.meta?.after_cursor || null,
+      responseBeforeCursor: data?.meta?.before_cursor || null,
+      responseLastCursor: data?.meta?.last_cursor || null,
+      responseLinksNext: data?.links?.next || null,
+      responseLinksLast: data?.links?.last || null,
+      responseCount: data?.count ?? null,
+      viewGroupBy: data?.view?.execution?.group_by || data?.view?.group_by || null,
     });
 
     // First page only — return unmodified so React's initial render is
     // exactly what Zendesk expects.
+    //
+    // Also return unmodified when state.enabled is false: we still
+    // tracked the rows above (so they're in state when merging later
+    // gets enabled), but we don't synthesise a merged response yet.
+    // This keeps Zendesk's normal pagination behaviour when the user
+    // hasn't opted in to infinite scroll.
+    if (!state.enabled) return originalResponse;
     if (state.rows.length <= pageSize) {
       return originalResponse;
     }
@@ -145,7 +196,15 @@
       groups:         Array.from(state.aux.groups.values()),
       columns: state.columns || data.columns,
       view:    state.view    || data.view,
-      count: state.rows.length,
+      // IMPORTANT: do NOT override `count`. In Zendesk's response,
+      // `count` is the TOTAL number of tickets in the view (e.g. 68),
+      // not the number returned in this response. If we set it to our
+      // accumulator size (e.g. 60), Zendesk thinks the view has only
+      // 60 tickets and disables further pagination — even though
+      // `meta.has_more` is still true. We pass `count` through
+      // unmodified so Zendesk's React knows there are more pages to
+      // fetch.
+      count: data.count != null ? data.count : state.rows.length,
       meta:  data.meta  || {},
       links: data.links || {},
     };
@@ -164,13 +223,18 @@
       case "configure": {
         const p = detail.payload || {};
         state.enabled = !!p.enabled;
-        if (p.viewId !== undefined && p.viewId !== state.viewId) {
-          resetState(p.viewId);
-        }
+        // We no longer reset state when configure passes a viewId —
+        // the page-hook tracks every view from document_start and
+        // auto-resets when it detects a viewId change in the URL. If
+        // tickets.js passes a viewId here, we just ignore it. (The
+        // viewId field is retained in the protocol for back-compat
+        // and human-readability of the ready event.)
         emit("ready", { enabled: state.enabled, viewId: state.viewId });
         return;
       }
       case "reset":
+        // Reset is still useful — tickets.js can force a clean slate
+        // (e.g. after detecting a manual reload by the user).
         resetState((detail.payload || {}).viewId || state.viewId);
         emit("ready", { enabled: state.enabled, viewId: state.viewId, reset: true });
         return;

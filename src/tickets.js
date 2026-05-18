@@ -600,10 +600,17 @@
     // accumulator, so its "Page X of Y" label drifts immediately — e.g.
     // accumulator has 39 tickets but Zendesk shows "Page 3 of 2".
     // Showing a wrong label is worse than showing nothing.
+    //
+    // The "(Page N of M)" label in the views header
+    // (views_views-header-page-amount) is a separate element from the
+    // pagination toolbar at the bottom — hide it too. We leave
+    // views_views-header-counter intact so the user still sees the
+    // total ticket count.
     return `
 [data-test-id^="generic-table-pagination"],
 [data-garden-id^="cursor_pagination"],
-[data-garden-id^="pagination"] {
+[data-garden-id^="pagination"],
+[data-test-id="views_views-header-page-amount"] {
   display: none !important;
 }
 nav:has(> [data-test-id^="generic-table-pagination"]),
@@ -1057,18 +1064,22 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     onOver(e) {
       // Mouse entered SOMETHING. Two cases:
       //   (a) The popup itself — cancel any pending close.
-      //   (b) A ticket SUBJECT ANCHOR — show / re-target the popup.
-      // Hovering elsewhere in a row (status badge, assignee cell,
-      // checkbox, etc.) does NOT trigger the popup — users have asked
-      // for tighter scoping so the popup only fires from the link
-      // they're actually trying to click.
+      //   (b) A ticket subject "link area" — show / re-target the popup.
+      // The "link area" is the subject anchor itself OR the table cell
+      // containing it. Cells are the trigger target rather than just the
+      // anchor because (1) some Zendesk renderings wrap the link in a
+      // larger clickable region so the anchor isn't always the topmost
+      // hover target, and (2) the user expects to be able to hover the
+      // padding around the link without the popup snapping shut.
+      // Hovering elsewhere in a row (status, requester, sla, etc.) does
+      // not trigger the popup.
       if (this.popup && this.popup.contains(e.target)) {
         this.cancelClose();
         return;
       }
-      const anchor = e.target?.closest?.(TICKET_SELECTORS.ticketAnchor);
-      if (!anchor) return;
-      const row = anchor.closest(TICKET_SELECTORS.dataRow);
+      const trigger = this.triggerFromTarget(e.target);
+      if (!trigger) return;
+      const row = trigger.closest(TICKET_SELECTORS.dataRow);
       if (!row) return;
       // Always cancel any pending close — we're hovering something useful.
       this.cancelClose();
@@ -1087,13 +1098,13 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
     onOut(e) {
       // The relatedTarget tells us where the mouse is heading next.
       const to = e.relatedTarget;
-      const leftAnchor = !!e.target?.closest?.(TICKET_SELECTORS.ticketAnchor);
+      const leftTrigger = !!this.triggerFromTarget(e.target);
       const leftPopup = !!(this.popup && e.target && this.popup.contains(e.target));
-      if (!leftAnchor && !leftPopup) return;
+      if (!leftTrigger && !leftPopup) return;
 
-      // If heading INTO the popup or INTO another ticket subject anchor, keep open.
+      // If heading INTO the popup or INTO another subject trigger, keep open.
       if (to && this.popup && this.popup.contains(to)) return;
-      if (to && to.closest?.(TICKET_SELECTORS.ticketAnchor)) return;
+      if (to && this.triggerFromTarget(to)) return;
 
       // Otherwise the mouse genuinely left the hover region.
       // Cancel a debounced show (the popup hasn't appeared yet).
@@ -1107,6 +1118,19 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
           this.dismiss();
         }, this.closeGraceMs);
       }
+    }
+
+    triggerFromTarget(target) {
+      if (!target?.closest) return null;
+      // Direct hover on a ticket subject link.
+      const link = target.closest(TICKET_SELECTORS.ticketAnchor);
+      if (link) return link;
+      // Hover on a table cell that contains a ticket subject link — the
+      // user is over the subject column but not precisely on the link
+      // text (whitespace, padding, wrapping div).
+      const cell = target.closest("td, th, [role='cell'], [role='gridcell']");
+      if (cell && cell.querySelector(TICKET_SELECTORS.ticketAnchor)) return cell;
+      return null;
     }
 
     onOutsideClick(e) {
