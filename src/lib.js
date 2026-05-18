@@ -296,7 +296,7 @@
     bottomThresholdPx: { min: 50, max: 1200 },
   });
 
-  // v0.9.2 — Lovely-like hover preview enhancements.
+  // v0.9.2 — hover preview enhancements.
   // Zendesk renders a built-in tooltip on row hover:
   //   [data-test-id="ticket_table_tooltip"]
   // with inner sections for header / description / comments. By default
@@ -307,8 +307,8 @@
   // you click outside) + full conversation (fetches ALL comments from
   // /api/v2/tickets/<id>/comments and renders them below the existing
   // Zendesk-shown few).
-  // Lovely-style hover preview defaults (v0.10.4): width is a viewport-
-  // percentage with a pixel cap, so the popup scales with window size.
+  // Hover preview defaults (v0.10.4): width is a viewport-percentage
+  // with a pixel cap, so the popup scales with window size.
   //   widthVw — % of viewport width (50-95)
   //   widthCapPx — absolute pixel cap (prevents silly-wide on ultrawide
   //                monitors). Default 1800 covers most setups.

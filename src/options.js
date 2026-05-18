@@ -231,9 +231,9 @@ const BUILTIN_TEMPLATES = [
     },
   },
   {
-    id: "builtin-lovely-like",
-    name: "Lovely-like (compact + colors + auto-refresh + sticky preview)",
-    description: "Inspired by Lovely Views: compact density, status + SLA colors, auto-refresh every 30s, AND the sticky hover preview with full conversation history (Zendesk's row-hover tooltip pinned + extended with all comments). Each of these is independently configurable in its own section; the template just turns them all on at once.",
+    id: "builtin-conversation-preview",
+    name: "Conversation preview (compact + colors + auto-refresh + sticky preview)",
+    description: "Compact density, status + SLA colors, auto-refresh every 30s, AND the sticky hover preview with full conversation history (Zendesk's row-hover tooltip pinned + extended with all comments). Each of these is independently configurable in its own section; the template just turns them all on at once.",
     includes: ["ticketPrefs", "ticketDensity", "ticketClassifiers", "ticketAutoRefresh", "ticketHover"],
     payload: {
       ticketPrefs: {
