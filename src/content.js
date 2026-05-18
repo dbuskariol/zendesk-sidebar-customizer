@@ -14,7 +14,7 @@
 
   const {
     SELECTORS, PREFIXES, RE, SECTION_NAMES,
-    ProfileStore, recordKnownHost, migrateProfileIndexV07,
+    ProfileStore, recordKnownHost, migrateProfileIndexV07, migrateTicketHoverWidthV0104,
     cssAttr, depthFromPath, viewKey, groupKey,
     RESERVED_PROFILE_ID,
   } = window.ZVT;
@@ -859,6 +859,7 @@
     // Run the v0.7.0 migration once before any reads — it's idempotent and
     // self-short-circuiting via a sentinel key in chrome.storage.local.
     await migrateProfileIndexV07().catch(() => {});
+    await migrateTicketHoverWidthV0104().catch(() => {});
     await profile.load();
     applyEnabledState();
     tryMountSidebar(15);

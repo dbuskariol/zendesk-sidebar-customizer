@@ -27,7 +27,7 @@ const {
   ALLOWED_REFRESH_INTERVALS,
   RE, viewKey, groupKey, deepMerge,
   loadProfileIndex, ensureProfileExists, deleteProfile,
-  loadKnownHosts, migrateProfileIndexV07,
+  loadKnownHosts, migrateProfileIndexV07, migrateTicketHoverWidthV0104,
   classifyStatus, classifyPriority, effectiveBucketColor,
 } = window.ZVT;
 
@@ -96,8 +96,9 @@ const TICKET_THEME_TOKENS = [
 ];
 
 const TICKET_HOVER_TOKENS = [
-  { key: "maxWidthPx",  label: "Max width",  ...TICKET_HOVER_RANGES.maxWidthPx,  step: 20, unitSuffix: "px" },
-  { key: "maxHeightVh", label: "Max height", ...TICKET_HOVER_RANGES.maxHeightVh, step: 5,  unitSuffix: "vh" },
+  { key: "widthVw",     label: "Width (% of window)", ...TICKET_HOVER_RANGES.widthVw,     step: 5, unitSuffix: "%" },
+  { key: "widthCapPx",  label: "Width cap (max px)",  ...TICKET_HOVER_RANGES.widthCapPx,  step: 50, unitSuffix: "px" },
+  { key: "maxHeightVh", label: "Max height",          ...TICKET_HOVER_RANGES.maxHeightVh, step: 5,  unitSuffix: "vh" },
 ];
 
 const TICKET_PAGINATION_TOKENS = [
@@ -3299,6 +3300,7 @@ function bindAllTicketSections() {
   // Demotes empty auto-created profiles to known-hosts so they don't clutter
   // the dropdown but still appear as pills.
   await migrateProfileIndexV07().catch(() => {});
+  await migrateTicketHoverWidthV0104().catch(() => {});
 
   allProfiles = (await loadProfileIndex()).profiles;
   knownHosts = await loadKnownHosts();

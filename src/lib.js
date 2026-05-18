@@ -307,11 +307,19 @@
   // you click outside) + full conversation (fetches ALL comments from
   // /api/v2/tickets/<id>/comments and renders them below the existing
   // Zendesk-shown few).
-  // Lovely-style hover preview defaults (v0.10.3): wider + shorter,
-  // hard-clamped to the viewport so it never overflows the screen.
+  // Lovely-style hover preview defaults (v0.10.4): width is a viewport-
+  // percentage with a pixel cap, so the popup scales with window size.
+  //   widthVw — % of viewport width (50-95)
+  //   widthCapPx — absolute pixel cap (prevents silly-wide on ultrawide
+  //                monitors). Default 1800 covers most setups.
+  //   maxHeightVh — % of viewport height
+  // maxWidthPx is kept for back-compat with older settings; treated as
+  // the cap when present, otherwise widthCapPx wins.
   const DEFAULT_TICKET_HOVER = Object.freeze({
     enhanced:         false,
-    maxWidthPx:       1400,
+    widthVw:          90,
+    widthCapPx:       1800,
+    maxWidthPx:       null,   // legacy; nullable so new defaults shine through
     maxHeightVh:      55,
     scrollComments:   true,
     sticky:           false,
@@ -319,7 +327,9 @@
   });
 
   const TICKET_HOVER_RANGES = Object.freeze({
-    maxWidthPx:  { min: 360, max: 1600 },
+    widthVw:     { min: 50, max: 95 },
+    widthCapPx:  { min: 600, max: 2400 },
+    maxWidthPx:  { min: 360, max: 1600 },    // legacy
     maxHeightVh: { min: 30,  max: 95 },
   });
 
@@ -667,11 +677,16 @@
 
   function validateTicketHover(v) {
     const d = DEFAULT_TICKET_HOVER;
-    const w = asNum(v?.maxWidthPx, TICKET_HOVER_RANGES.maxWidthPx.min, TICKET_HOVER_RANGES.maxWidthPx.max, d.maxWidthPx);
+    const vw = asNum(v?.widthVw,     TICKET_HOVER_RANGES.widthVw.min,     TICKET_HOVER_RANGES.widthVw.max,     d.widthVw);
+    const cap = asNum(v?.widthCapPx, TICKET_HOVER_RANGES.widthCapPx.min,  TICKET_HOVER_RANGES.widthCapPx.max,  d.widthCapPx);
+    const legacyW = v?.maxWidthPx == null ? null
+      : asNum(v.maxWidthPx, TICKET_HOVER_RANGES.maxWidthPx.min, TICKET_HOVER_RANGES.maxWidthPx.max, null);
     const h = asNum(v?.maxHeightVh, TICKET_HOVER_RANGES.maxHeightVh.min, TICKET_HOVER_RANGES.maxHeightVh.max, d.maxHeightVh);
     return {
       enhanced:         asBool(v?.enhanced, d.enhanced),
-      maxWidthPx:       Math.round(w),
+      widthVw:          Math.round(vw),
+      widthCapPx:       Math.round(cap),
+      maxWidthPx:       legacyW == null ? null : Math.round(legacyW),
       maxHeightVh:      Math.round(h),
       scrollComments:   asBool(v?.scrollComments, d.scrollComments),
       sticky:           asBool(v?.sticky, d.sticky),
@@ -1132,6 +1147,42 @@
     return migrationPromise;
   }
 
+  /**
+   * v0.10.4 migration: clear legacy `maxWidthPx` from ticketHover for
+   * every profile so the new viewport-percentage default (widthVw +
+   * widthCapPx) takes effect. Without this, users who had a
+   * pre-v0.10.4 saved width would keep seeing a narrow popup.
+   * Idempotent via the MIGRATION_HOVER_WIDTH key.
+   */
+  const MIGRATION_HOVER_WIDTH = "v0104HoverWidthMigrated";
+  let hoverWidthMigrationPromise = null;
+  async function migrateTicketHoverWidthV0104() {
+    if (hoverWidthMigrationPromise) return hoverWidthMigrationPromise;
+    hoverWidthMigrationPromise = (async () => {
+      const { [MIGRATION_HOVER_WIDTH]: done } = await new Promise((r) =>
+        chrome.storage.local.get({ [MIGRATION_HOVER_WIDTH]: false }, r)
+      );
+      if (done) return { migrated: false };
+
+      const all = await new Promise((r) => chrome.storage.sync.get(null, r));
+      const writes = {};
+      for (const [key, val] of Object.entries(all || {})) {
+        if (!key.startsWith("ticketHover:")) continue;
+        if (val && typeof val === "object" && val.maxWidthPx != null) {
+          writes[key] = { ...val, maxWidthPx: null };
+        }
+      }
+      if (Object.keys(writes).length) {
+        await new Promise((r) => chrome.storage.sync.set(writes, r));
+      }
+      await new Promise((r) =>
+        chrome.storage.local.set({ [MIGRATION_HOVER_WIDTH]: true }, r)
+      );
+      return { migrated: true, profiles: Object.keys(writes).length };
+    })();
+    return hoverWidthMigrationPromise;
+  }
+
   /* ============================== utilities =========================== */
 
   function cssAttr(s) {
@@ -1302,7 +1353,7 @@
     storageKey, areaApi,
     loadProfileIndex, ensureProfileExists, deleteProfile,
     recordKnownHost, loadKnownHosts,
-    profileHasAnySettings, migrateProfileIndexV07,
+    profileHasAnySettings, migrateProfileIndexV07, migrateTicketHoverWidthV0104,
     // Ticket-list helpers
     isTicketTable, normalizeHeaderLabel, computeLayoutFingerprint, deriveColumnKey,
     resolveSlaPatterns, resolveGroupParsers,
