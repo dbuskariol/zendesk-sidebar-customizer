@@ -45,6 +45,8 @@
         <a href="#sec-ticket-columns" data-section="ticket-columns" class="sidenav-sub">— Columns</a>
         <a href="#sec-ticket-colors"  data-section="ticket-colors"  class="sidenav-sub">— Colors</a>
         <a href="#sec-ticket-autorefresh" data-section="ticket-autorefresh" class="sidenav-sub">— Auto-refresh</a>
+        <a href="#sec-ticket-hover"   data-section="ticket-hover"   class="sidenav-sub">— Hover preview</a>
+        <a href="#sec-ticket-pagination" data-section="ticket-pagination" class="sidenav-sub">— Pagination</a>
         <a href="#sec-ticket-theme"   data-section="ticket-theme"   class="sidenav-sub">— Theme</a>
         <span class="sidenav-group-header">Other</span>
         <a href="#sec-templates" data-section="templates" class="sidenav-sub">— Templates</a>
@@ -327,6 +329,55 @@
               <label class="toggle"><input type="checkbox" id="ticket-autorefresh-indicator" /> <span>Show countdown pill on the table</span></label>
             </div>
             <p class="sub small section-fork" id="ticketAutoRefresh-fork"></p>
+          </div>
+        </section>
+
+        <!-- Ticket hover preview -->
+        <section class="card" id="sec-ticket-hover">
+          <h2>Ticket list — Hover preview</h2>
+          <div class="card-body">
+            <p class="sub">
+              Zendesk shows a small popup when you hover over a row, with
+              the ticket description and most recent comments. By default
+              it's cramped and closes as soon as you move the mouse. This
+              section makes it Lovely-like: wider, scrollable, optionally
+              pinned, optionally fetches the full conversation history.
+            </p>
+            <label class="toggle"><input type="checkbox" id="ticket-hover-enhanced" /> <span>Enhanced hover preview (resize + scroll)</span></label>
+            <div id="ticket-hover-grid" class="density-grid"></div>
+            <label class="toggle"><input type="checkbox" id="ticket-hover-scroll-comments" /> <span>Make the comments list scroll inside the popup</span></label>
+            <label class="toggle"><input type="checkbox" id="ticket-hover-sticky" /> <span>Sticky mode — pin the popup on hover, dismiss with Esc or click outside</span></label>
+            <label class="toggle"><input type="checkbox" id="ticket-hover-full-conversation" /> <span>Fetch the full conversation history via the Zendesk API (needs sticky mode)</span></label>
+            <p class="sub small">
+              Full-conversation fetch uses your existing Zendesk session
+              (no extra login or permission needed) and caches each
+              ticket's comments for 5 minutes. All comments are
+              sanitized before display.
+            </p>
+            <p class="sub small section-fork" id="ticketHover-fork"></p>
+          </div>
+        </section>
+
+        <!-- Ticket pagination / infinite scroll -->
+        <section class="card" id="sec-ticket-pagination">
+          <h2>Ticket list — Pagination</h2>
+          <div class="card-body">
+            <p class="sub">
+              Replace Zendesk's "Next" / "Previous" pagination with
+              auto-load-on-scroll. When you scroll near the bottom of
+              the table the next page is loaded automatically. Note:
+              this is auto-pagination — previous rows are replaced, not
+              accumulated (a true accumulating scroll requires
+              intercepting Zendesk's API responses, which is fragile).
+            </p>
+            <fieldset class="reorder-mode">
+              <legend>Pagination mode</legend>
+              <label><input type="radio" name="ticketPaginationMode" value="standard" /> Standard (Zendesk default) — manual Next / Previous buttons</label>
+              <label><input type="radio" name="ticketPaginationMode" value="infinite" /> Auto-load on scroll — Next is clicked automatically when you near the bottom</label>
+            </fieldset>
+            <div id="ticket-pagination-grid" class="density-grid"></div>
+            <label class="toggle"><input type="checkbox" id="ticket-pagination-hide-buttons" /> <span>Hide the Next / Previous buttons (when auto-load is on)</span></label>
+            <p class="sub small section-fork" id="ticketPagination-fork"></p>
           </div>
         </section>
 

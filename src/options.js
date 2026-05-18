@@ -20,6 +20,8 @@ const {
   DEFAULT_PREFS, DEFAULT_HIDE, DEFAULT_DENSITY, DEFAULT_ORDER, DEFAULT_THEME,
   DEFAULT_TICKET_PREFS, DEFAULT_TICKET_DENSITY, DEFAULT_TICKET_THEME,
   DEFAULT_TICKET_HIDE, DEFAULT_TICKET_CLASSIFIERS, DEFAULT_TICKET_AUTO_REFRESH,
+  DEFAULT_TICKET_HOVER, TICKET_HOVER_RANGES,
+  DEFAULT_TICKET_PAGINATION, TICKET_PAGINATION_RANGES, PAGINATION_MODES,
   DEFAULT_BUCKET_COLORS, DEFAULT_SLA_PATTERNS, DEFAULT_GROUP_PARSERS,
   SEMANTIC_STATUS_BUCKETS, SEMANTIC_SLA_BUCKETS, SEMANTIC_PRIORITY_BUCKETS,
   ALLOWED_REFRESH_INTERVALS,
@@ -91,6 +93,15 @@ const TICKET_THEME_TOKENS = [
   { key: "rowSelectedBg",   label: "Selected row background" },
   { key: "groupHeaderBg",   label: "Group header background" },
   { key: "groupHeaderFg",   label: "Group header text" },
+];
+
+const TICKET_HOVER_TOKENS = [
+  { key: "maxWidthPx",  label: "Max width",  ...TICKET_HOVER_RANGES.maxWidthPx,  step: 20, unitSuffix: "px" },
+  { key: "maxHeightVh", label: "Max height", ...TICKET_HOVER_RANGES.maxHeightVh, step: 5,  unitSuffix: "vh" },
+];
+
+const TICKET_PAGINATION_TOKENS = [
+  { key: "bottomThresholdPx", label: "Trigger at distance from bottom", ...TICKET_PAGINATION_RANGES.bottomThresholdPx, step: 25, unitSuffix: "px" },
 ];
 
 // Ticket-list density presets — calibrated against measured intrinsic
@@ -220,9 +231,9 @@ const BUILTIN_TEMPLATES = [
   },
   {
     id: "builtin-lovely-like",
-    name: "Lovely-like (compact + colors + auto-refresh)",
-    description: "Inspired by Lovely Views: compact density, status + SLA colors, auto-refresh every 30s. Bring-your-own-bookmarks (we don't replicate the marketplace features).",
-    includes: ["ticketPrefs", "ticketDensity", "ticketClassifiers", "ticketAutoRefresh"],
+    name: "Lovely-like (compact + colors + auto-refresh + sticky preview)",
+    description: "Inspired by Lovely Views: compact density, status + SLA colors, auto-refresh every 30s, AND the sticky hover preview with full conversation history (Zendesk's row-hover tooltip pinned + extended with all comments). Each of these is independently configurable in its own section; the template just turns them all on at once.",
+    includes: ["ticketPrefs", "ticketDensity", "ticketClassifiers", "ticketAutoRefresh", "ticketHover"],
     payload: {
       ticketPrefs: {
         ...DEFAULT_TICKET_PREFS,
@@ -236,22 +247,22 @@ const BUILTIN_TEMPLATES = [
         cellPaddingLeft: 10, cellPaddingRight: 10,
         headerMinHeight: 34, headerFontSize: 13,
       },
-      // Sticks with the built-in English defaults for status / SLA /
-      // priority. We don't pre-map raw values here because raw values
-      // are tenant-and-locale-specific - the runtime falls back to
-      // DEFAULT_STATUS_RAW_TO_BUCKET for the common English ones, and
-      // anything else stays unclassified until the user maps it.
       ticketClassifiers: {
         ...DEFAULT_TICKET_CLASSIFIERS,
-        // Empty mappings + empty pattern arrays = the runtime uses the
-        // built-in English defaults via resolveSlaPatterns /
-        // resolveGroupParsers.
       },
       ticketAutoRefresh: {
         enabled: true,
         intervalSec: 30,
         pauseOnSelected: true,
         showIndicator: true,
+      },
+      ticketHover: {
+        enhanced: true,
+        maxWidthPx: 760,
+        maxHeightVh: 80,
+        scrollComments: true,
+        sticky: true,
+        fullConversation: true,
       },
     },
   },
@@ -408,6 +419,11 @@ function bindEls() {
     "ticketClassifiers-fork",
     "ticket-autorefresh-enabled","ticket-autorefresh-interval","ticket-autorefresh-pause","ticket-autorefresh-indicator",
     "ticketAutoRefresh-fork",
+    "ticket-hover-enhanced","ticket-hover-grid","ticket-hover-scroll-comments",
+    "ticket-hover-sticky","ticket-hover-full-conversation",
+    "ticketHover-fork",
+    "ticket-pagination-grid","ticket-pagination-hide-buttons",
+    "ticketPagination-fork",
     "ticket-theme-grid","ticketTheme-fork",
   ]) {
     els[id.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = $(id);
@@ -1837,7 +1853,6 @@ async function applyTemplate(tpl) {
     return;
   }
 
-  // Show the user exactly what changes and explicitly call out what's preserved.
   const preservedNote = blocked.length
     ? `\n\nThis template also lists ${blocked.join(", ")}, but templates never overwrite those — your existing hide list / custom view styling / reorder / ticket column hide list will be preserved.`
     : `\n\nYour hide list, custom view styling, reorder, and ticket column hide list are NEVER touched by templates — they're always preserved.`;
@@ -2455,6 +2470,8 @@ function bindAll() {
     ticketHide:        renderTicketColumns,
     ticketClassifiers: renderTicketColors,
     ticketAutoRefresh: renderTicketAutoRefresh,
+    ticketHover:       renderTicketHover,
+    ticketPagination:  renderTicketPagination,
   };
 
   chrome.storage.onChanged.addListener(async (changes, area) => {
@@ -3178,6 +3195,80 @@ function bindTicketAutoRefresh() {
   });
 }
 
+/* ---------- Hover preview ---------- */
+
+function renderTicketHover() {
+  const h = store.resolve("ticketHover") || DEFAULT_TICKET_HOVER;
+  els.ticketHoverEnhanced.checked = !!h.enhanced;
+  els.ticketHoverScrollComments.checked = !!h.scrollComments;
+  els.ticketHoverSticky.checked = !!h.sticky;
+  els.ticketHoverFullConversation.checked = !!h.fullConversation;
+  els.ticketHoverGrid.innerHTML = "";
+  for (const tk of TICKET_HOVER_TOKENS) {
+    const value = h[tk.key];
+    const defaultRef = DEFAULT_TICKET_HOVER[tk.key];
+    els.ticketHoverGrid.appendChild(buildRow({
+      kind: "number", label: tk.label, min: tk.min, max: tk.max, step: tk.step,
+      value: value == null ? null : value, defaultRef,
+      onPreview: (v) => queuePreview({ ticketHover: { [tk.key]: v } }),
+      onCommit:  (v) => store.update("ticketHover", { [tk.key]: v }),
+      onClear:   async () => { await store.update("ticketHover", { [tk.key]: defaultRef }); },
+      section: "ticketHover",
+    }));
+  }
+  renderForkLine("ticketHover", "ticketHover-fork");
+}
+function bindTicketHover() {
+  els.ticketHoverEnhanced.addEventListener("change", () => {
+    store.update("ticketHover", { enhanced: els.ticketHoverEnhanced.checked });
+  });
+  els.ticketHoverScrollComments.addEventListener("change", () => {
+    store.update("ticketHover", { scrollComments: els.ticketHoverScrollComments.checked });
+  });
+  els.ticketHoverSticky.addEventListener("change", () => {
+    store.update("ticketHover", { sticky: els.ticketHoverSticky.checked });
+  });
+  els.ticketHoverFullConversation.addEventListener("change", () => {
+    store.update("ticketHover", { fullConversation: els.ticketHoverFullConversation.checked });
+  });
+}
+
+/* ---------- Pagination (auto-paginate-on-scroll) ---------- */
+
+function renderTicketPagination() {
+  const p = store.resolve("ticketPagination") || DEFAULT_TICKET_PAGINATION;
+  document.querySelectorAll('input[name="ticketPaginationMode"]').forEach((radio) => {
+    radio.checked = (radio.value === p.mode);
+  });
+  els.ticketPaginationHideButtons.checked = !!p.hidePaginator;
+  els.ticketPaginationGrid.innerHTML = "";
+  for (const tk of TICKET_PAGINATION_TOKENS) {
+    const value = p[tk.key];
+    const defaultRef = DEFAULT_TICKET_PAGINATION[tk.key];
+    els.ticketPaginationGrid.appendChild(buildRow({
+      kind: "number", label: tk.label, min: tk.min, max: tk.max, step: tk.step,
+      value: value == null ? null : value, defaultRef,
+      onPreview: () => {},  // numeric tweak doesn't make sense to live-preview
+      onCommit:  (v) => store.update("ticketPagination", { [tk.key]: v }),
+      onClear:   async () => { await store.update("ticketPagination", { [tk.key]: defaultRef }); },
+      section: "ticketPagination",
+    }));
+  }
+  renderForkLine("ticketPagination", "ticketPagination-fork");
+}
+function bindTicketPagination() {
+  document.querySelectorAll('input[name="ticketPaginationMode"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      if (radio.checked && PAGINATION_MODES.includes(radio.value)) {
+        store.update("ticketPagination", { mode: radio.value });
+      }
+    });
+  });
+  els.ticketPaginationHideButtons.addEventListener("change", () => {
+    store.update("ticketPagination", { hidePaginator: els.ticketPaginationHideButtons.checked });
+  });
+}
+
 /* ---------- Master wiring (ticket sections) ---------- */
 
 function renderAllTicketSections() {
@@ -3187,6 +3278,8 @@ function renderAllTicketSections() {
   renderTicketColumns();
   renderTicketColors();
   renderTicketAutoRefresh();
+  renderTicketHover();
+  renderTicketPagination();
 }
 function bindAllTicketSections() {
   bindTicketGeneral();
@@ -3194,6 +3287,8 @@ function bindAllTicketSections() {
   bindTicketColumns();
   bindSlaPatternControls();
   bindTicketAutoRefresh();
+  bindTicketHover();
+  bindTicketPagination();
 }
 
 /* ============================== boot ============================== */
