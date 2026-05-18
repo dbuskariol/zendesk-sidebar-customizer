@@ -30,6 +30,65 @@
     outerContainer: 'ul[data-test-id="views_views-tree_container"]',
   });
 
+  // Ticket-list (table) selectors — calibrated from probes on a live tenant.
+  // ALL of these are tenant-agnostic Zendesk Garden conventions; nothing
+  // about a specific tenant is encoded here. Custom-field columns surface
+  // their numeric IDs in [data-test-id^="ticket-table-cells-custom-field-"]
+  // and those IDs are discovered live per tenant, never hardcoded.
+  const TICKET_SELECTORS = Object.freeze({
+    tbody:          'tbody[data-garden-id="tables.body"]',
+    headerCell:     '[data-garden-id="tables.header_cell"]',
+    dataRow:        'tr[data-test-id="generic-table-row"]',
+    groupRow:       'tr[data-test-id="generic-table-rows-group-by"]',
+    cell:           '[data-garden-id="tables.cell"]',
+    statusCell:     '[data-test-id="ticket-table-cells-status"]',
+    statusBadge:    '[data-test-id="ticket-table-cells-status"] [aria-label]',
+    slaCell:        '[data-test-id="ticket-table-cells-sla"]',
+    subjectCell:    '[data-test-id="ticket-table-cells-subject"]',
+    assigneeCell:   '[data-test-id="ticket-table-cells-assignee"]',
+    idCell:         '[data-test-id="generic-table-cells-id"]',
+    dateCell:       '[data-test-id="generic-table-cells-date"]',
+    customFieldCell:'[data-test-id^="ticket-table-cells-custom-field-"]',
+    ticketAnchor:   'a[href^="/agent/tickets/"]',
+    refreshBtn:     '[data-test-id="views_views-list_header-refresh"]',
+    paginateNext:   '[data-test-id="generic-table-pagination-next"]',
+    paginatePrev:   '[data-test-id="generic-table-pagination-previous"]',
+  });
+
+  // The set of Zendesk-canonical test-ids that identify a column the same
+  // way across every tenant. Anything in this set can be used as a column
+  // key in user settings AND survives a different tenant/view layout.
+  // Custom-field columns are NOT canonical (suffix is tenant-scoped).
+  const CANONICAL_TICKET_TEST_IDS = Object.freeze(new Set([
+    "generic-table-cells-selectable",
+    "generic-table-cells-empty-cell",
+    "generic-table-cells-overflow-menu-cell",
+    "ticket-table-cells-status",
+    "ticket-table-cells-sla",
+    "ticket-table-cells-subject",
+    "ticket-table-cells-assignee",
+    "generic-table-cells-id",
+  ]));
+
+  // Generic test-ids that can identify MULTIPLE distinct columns in the
+  // same table (a date column can be Requested OR Updated OR Solved OR
+  // Due). When we see one, we compound the key with the visible header
+  // label so distinct columns don't collide.
+  const AMBIGUOUS_TICKET_TEST_IDS = Object.freeze(new Set([
+    "generic-table-cells-date",
+  ]));
+
+  // Markers that distinguish a real ticket table from any other Garden
+  // table that happens to share `tbody[data-garden-id="tables.body"]`.
+  // We require at least one of these in the rendered table before
+  // applying any ticket-list customization.
+  const TICKET_TABLE_VALIDATORS = Object.freeze([
+    "ticket-table-cells-subject",
+    "ticket-table-cells-status",
+    "ticket-table-cells-sla",
+    "ticket-table-cells-assignee",
+  ]);
+
   const PREFIXES = Object.freeze({
     VIEW_TID:    "views_views-list_item-view-",
     FOLDER_TID:  "views_views-list_item-folder-",
@@ -87,6 +146,122 @@
 
   const DEFAULT_CUSTOM_VIEWS = Object.freeze({});
 
+  // ---- Ticket-list defaults (v0.9.0) ----
+
+  // Master toggles for the ticket-list feature area. Mirrors `prefs` for
+  // the sidebar — keeping these orthogonal lets the user enable compact
+  // sidebar without compact tickets, or vice versa.
+  const DEFAULT_TICKET_PREFS = Object.freeze({
+    enabled:        true,
+    compact:        false,
+    themed:         false,
+    colorsEnabled:  false,
+    hideEnabled:    true,   // hide list is harmless if empty; default on
+  });
+
+  // Density tokens for the ticket TABLE (not the sidebar). Empty by default
+  // — when the user enables ticket-compact mode without setting tokens, the
+  // built-in compact CSS supplies the falls-back values from INTRINSIC_TICKETS.
+  const DEFAULT_TICKET_DENSITY = Object.freeze({
+    rowMinHeight:      null,
+    rowFontSize:       null,
+    cellPaddingTop:    null,
+    cellPaddingBottom: null,
+    cellPaddingLeft:   null,
+    cellPaddingRight:  null,
+    headerMinHeight:   null,
+    headerFontSize:    null,
+  });
+
+  const DEFAULT_TICKET_THEME = Object.freeze({
+    headerBg:        null,
+    headerFg:        null,
+    rowHoverBg:      null,
+    rowSelectedBg:   null,
+    groupHeaderBg:   null,
+    groupHeaderFg:   null,
+  });
+
+  // `cols` is a map of columnKey → true (hidden). columnKey is whatever
+  // deriveColumnKey() emitted on this tenant; see CANONICAL_TICKET_TEST_IDS
+  // and the layout-fingerprint fallback in deriveColumnKey for the rules.
+  // Lives in storage.local because keys can be tenant-scoped.
+  const DEFAULT_TICKET_HIDE = Object.freeze({ cols: {} });
+
+  // Classifier shape — maps RAW observed values (any locale, any custom
+  // status) to a semantic bucket + color. Defaults shipped for the standard
+  // English Zendesk statuses; everything else stays unclassified until the
+  // user maps it via the options page. This is the audit's #6 fix: we
+  // never assume English at runtime.
+  const SEMANTIC_STATUS_BUCKETS = Object.freeze([
+    "open", "pending", "solved", "new", "onHold", "closed",
+  ]);
+  const SEMANTIC_SLA_BUCKETS = Object.freeze(["breached", "atRisk", "met"]);
+  const SEMANTIC_PRIORITY_BUCKETS = Object.freeze([
+    "urgent", "high", "normal", "low",
+  ]);
+
+  // Generic English defaults — applied automatically when an observation's
+  // raw key matches one of these, override-able per profile, and never
+  // re-applied if the user has explicitly cleared a mapping (tombstone via
+  // null in the map).
+  const DEFAULT_STATUS_RAW_TO_BUCKET = Object.freeze({
+    open:     "open",
+    pending:  "pending",
+    solved:   "solved",
+    new:      "new",
+    hold:     "onHold",
+    "on-hold":"onHold",
+    "on hold":"onHold",
+    closed:   "closed",
+  });
+  const DEFAULT_BUCKET_COLORS = Object.freeze({
+    status: {
+      open:    "#eb5c69",
+      pending: "#f5a623",
+      solved:  "#22a06b",
+      new:     "#2f80ed",
+      onHold:  "#a0a0a0",
+      closed:  "#c4c4c4",
+    },
+    sla: {
+      breached: "#eb5c69",
+      atRisk:   "#f5a623",
+      met:      "#22a06b",
+    },
+    priority: {
+      urgent: "#eb5c69",
+      high:   "#f5a623",
+      normal: null,
+      low:    "#7eb6ef",
+    },
+  });
+  const DEFAULT_SLA_PATTERNS = Object.freeze([
+    { pattern: "breached",           flags: "i", bucket: "breached" },
+    { pattern: "till breach",        flags: "i", bucket: "atRisk" },
+    { pattern: "hours? to breach",   flags: "i", bucket: "atRisk" },
+    { pattern: "achieved|met|on time", flags: "i", bucket: "met" },
+  ]);
+  const DEFAULT_GROUP_PARSERS = Object.freeze([
+    { pattern: "^Priority:\\s*(.+)$", flags: "i", groupField: "priority" },
+    { pattern: "^Status:\\s*(.+)$",   flags: "i", groupField: "status" },
+  ]);
+
+  const DEFAULT_TICKET_CLASSIFIERS = Object.freeze({
+    statusByRaw:   {},          // raw aria-label string → { bucket, color }
+    slaPatterns:   [],          // user-overridable; falls back to DEFAULT_SLA_PATTERNS at eval
+    groupParsers:  [],          // user-overridable; falls back to DEFAULT_GROUP_PARSERS at eval
+    bucketColors:  { status: {}, sla: {}, priority: {} },  // overrides on top of DEFAULT_BUCKET_COLORS
+    priorityByRaw: {},          // raw priority text → bucket (e.g. "Urgent" → "urgent")
+  });
+
+  const DEFAULT_TICKET_AUTO_REFRESH = Object.freeze({
+    enabled:         false,
+    intervalSec:     30,        // 15 | 30 | 60 | 120 | 300
+    pauseOnSelected: true,      // pause if any row checkbox checked
+    showIndicator:   true,      // small pill in lower-right of the table
+  });
+
   /* ========================== section strategy ======================== */
 
   // The single source of truth for every settings section.
@@ -132,6 +307,47 @@
       merge: "replace",
       getDefault: () => structuredClone(DEFAULT_CUSTOM_VIEWS),
       validate: validateCustomViews,
+    },
+    // v0.9.0 — ticket-list sections. ticketHide is local (column keys can
+    // include tenant-scoped custom-field IDs and per-layout fingerprints,
+    // both of which break cross-tenant sync). ticketClassifiers is sync
+    // with replace semantics per categorical map so tombstones (null
+    // value) cleanly remove a parent-profile mapping.
+    ticketPrefs: {
+      area: "sync",
+      merge: "deep",
+      getDefault: () => structuredClone(DEFAULT_TICKET_PREFS),
+      validate: validateTicketPrefs,
+    },
+    ticketDensity: {
+      area: "sync",
+      merge: "deep",
+      getDefault: () => structuredClone(DEFAULT_TICKET_DENSITY),
+      validate: validateTicketDensity,
+    },
+    ticketTheme: {
+      area: "sync",
+      merge: "deep",
+      getDefault: () => structuredClone(DEFAULT_TICKET_THEME),
+      validate: validateTicketTheme,
+    },
+    ticketHide: {
+      area: "local",
+      merge: "replace",
+      getDefault: () => structuredClone(DEFAULT_TICKET_HIDE),
+      validate: validateTicketHide,
+    },
+    ticketClassifiers: {
+      area: "sync",
+      merge: "deep",
+      getDefault: () => structuredClone(DEFAULT_TICKET_CLASSIFIERS),
+      validate: validateTicketClassifiers,
+    },
+    ticketAutoRefresh: {
+      area: "sync",
+      merge: "deep",
+      getDefault: () => structuredClone(DEFAULT_TICKET_AUTO_REFRESH),
+      validate: validateTicketAutoRefresh,
     },
   });
 
@@ -228,6 +444,154 @@
     countBadgeMargin: 0,
     countBadgePadding: 0,
   });
+
+  // Zendesk's intrinsic computed values for the ticket-list TABLE, derived
+  // from probes on a live tenant. Run the calibration probe in README.md
+  // → "Ticket-list calibration" to remeasure if Zendesk ships changes.
+  // Row min-height (41px) and cell vertical padding (10px/10px) are the
+  // primary levers — the row itself has zero padding; the cell does.
+  const INTRINSIC_TICKETS = Object.freeze({
+    rowMinHeight:      41,
+    rowFontSize:       14,
+    rowLineHeight:     20,
+    cellFontSize:      14,
+    cellPaddingTop:    10,
+    cellPaddingBottom: 10,
+    cellPaddingLeft:   12,
+    cellPaddingRight:  12,
+    headerMinHeight:   40,   // not measured live; sensible default
+    headerFontSize:    14,
+  });
+
+  const TICKET_DENSITY_RANGES = Object.freeze({
+    rowMinHeight:      { min: 16, max: 80 },
+    rowFontSize:       { min: 10, max: 20 },
+    cellPaddingTop:    { min: 0,  max: 24 },
+    cellPaddingBottom: { min: 0,  max: 24 },
+    cellPaddingLeft:   { min: 0,  max: 32 },
+    cellPaddingRight:  { min: 0,  max: 32 },
+    headerMinHeight:   { min: 16, max: 80 },
+    headerFontSize:    { min: 10, max: 20 },
+  });
+
+  function validateTicketPrefs(v) {
+    const d = DEFAULT_TICKET_PREFS;
+    return {
+      enabled:       asBool(v?.enabled, d.enabled),
+      compact:       asBool(v?.compact, d.compact),
+      themed:        asBool(v?.themed, d.themed),
+      colorsEnabled: asBool(v?.colorsEnabled, d.colorsEnabled),
+      hideEnabled:   asBool(v?.hideEnabled, d.hideEnabled),
+    };
+  }
+
+  function validateTicketDensity(v) {
+    const out = { ...DEFAULT_TICKET_DENSITY };
+    if (!v || typeof v !== "object") return out;
+    for (const [k, raw] of Object.entries(v)) {
+      const range = TICKET_DENSITY_RANGES[k];
+      if (!range) continue;
+      out[k] = raw == null ? null : Math.round(asNum(raw, range.min, range.max, null));
+    }
+    return out;
+  }
+
+  function validateTicketTheme(v) {
+    const out = { ...DEFAULT_TICKET_THEME };
+    if (!v || typeof v !== "object") return out;
+    for (const k of Object.keys(DEFAULT_TICKET_THEME)) {
+      const c = asColor(v[k]);
+      out[k] = c;
+    }
+    return out;
+  }
+
+  function validateTicketHide(v) {
+    const out = { cols: {} };
+    if (v?.cols && typeof v.cols === "object") {
+      for (const [k, val] of Object.entries(v.cols)) {
+        if (typeof k !== "string" || !k) continue;
+        if (k.length > 200) continue;          // keys are bounded
+        if (val === true) out.cols[k] = true;
+      }
+    }
+    return out;
+  }
+
+  function validateRegexPattern(p) {
+    // Allow patterns up to 200 chars; reject anything that fails RegExp parse.
+    if (typeof p !== "string" || !p || p.length > 200) return null;
+    try { new RegExp(p); return p; } catch { return null; }
+  }
+  function validateRegexFlags(f) {
+    return typeof f === "string" && /^[gimsuy]*$/.test(f) && f.length <= 6 ? f : "i";
+  }
+
+  function validateTicketClassifiers(v) {
+    const out = structuredClone(DEFAULT_TICKET_CLASSIFIERS);
+    if (!v || typeof v !== "object") return out;
+
+    if (v.statusByRaw && typeof v.statusByRaw === "object") {
+      for (const [raw, entry] of Object.entries(v.statusByRaw)) {
+        if (typeof raw !== "string" || !raw || raw.length > 200) continue;
+        if (entry === null) { out.statusByRaw[raw] = null; continue; }  // tombstone
+        if (!entry || typeof entry !== "object") continue;
+        const bucket = SEMANTIC_STATUS_BUCKETS.includes(entry.bucket) ? entry.bucket : null;
+        const color = asColor(entry.color);
+        if (bucket || color) out.statusByRaw[raw] = { bucket, color };
+      }
+    }
+    if (v.priorityByRaw && typeof v.priorityByRaw === "object") {
+      for (const [raw, entry] of Object.entries(v.priorityByRaw)) {
+        if (typeof raw !== "string" || !raw || raw.length > 200) continue;
+        if (entry === null) { out.priorityByRaw[raw] = null; continue; }
+        if (!entry || typeof entry !== "object") continue;
+        const bucket = SEMANTIC_PRIORITY_BUCKETS.includes(entry.bucket) ? entry.bucket : null;
+        const color = asColor(entry.color);
+        if (bucket || color) out.priorityByRaw[raw] = { bucket, color };
+      }
+    }
+    if (Array.isArray(v.slaPatterns)) {
+      out.slaPatterns = v.slaPatterns.slice(0, 20).map(p => {
+        const pattern = validateRegexPattern(p?.pattern);
+        const flags = validateRegexFlags(p?.flags);
+        const bucket = SEMANTIC_SLA_BUCKETS.includes(p?.bucket) ? p.bucket : null;
+        return pattern && bucket ? { pattern, flags, bucket } : null;
+      }).filter(Boolean);
+    }
+    if (Array.isArray(v.groupParsers)) {
+      out.groupParsers = v.groupParsers.slice(0, 20).map(p => {
+        const pattern = validateRegexPattern(p?.pattern);
+        const flags = validateRegexFlags(p?.flags);
+        const gf = asString(p?.groupField);
+        return pattern && gf ? { pattern, flags, groupField: gf.slice(0, 40) } : null;
+      }).filter(Boolean);
+    }
+    if (v.bucketColors && typeof v.bucketColors === "object") {
+      for (const cat of ["status", "sla", "priority"]) {
+        if (!v.bucketColors[cat] || typeof v.bucketColors[cat] !== "object") continue;
+        for (const [bucket, color] of Object.entries(v.bucketColors[cat])) {
+          if (color === null) { out.bucketColors[cat][bucket] = null; continue; }
+          const c = asColor(color);
+          if (c) out.bucketColors[cat][bucket] = c;
+        }
+      }
+    }
+    return out;
+  }
+
+  const ALLOWED_REFRESH_INTERVALS = Object.freeze([15, 30, 60, 120, 300]);
+  function validateTicketAutoRefresh(v) {
+    const d = DEFAULT_TICKET_AUTO_REFRESH;
+    const interval = ALLOWED_REFRESH_INTERVALS.includes(Number(v?.intervalSec)) ? Number(v.intervalSec) : d.intervalSec;
+    return {
+      enabled:         asBool(v?.enabled, d.enabled),
+      intervalSec:     interval,
+      pauseOnSelected: asBool(v?.pauseOnSelected, d.pauseOnSelected),
+      showIndicator:   asBool(v?.showIndicator, d.showIndicator),
+    };
+  }
+
 
   function validateDensity(v) {
     const out = { level: {}, global: { ...DEFAULT_DENSITY.global } };
@@ -679,16 +1043,150 @@
   function viewKey(id) { return `v:${id}`; }
   function groupKey(path) { return `g:${path}`; }
 
+  /* =========================== ticket-list helpers ====================== */
+
+  // Validates a `tbody[data-garden-id="tables.body"]` is in fact a ticket
+  // table. Garden tables are reused for non-ticket lists (integrations,
+  // organizations, etc) so the bare tbody is not sufficient.
+  function isTicketTable(tbody) {
+    if (!tbody || tbody.tagName !== "TBODY") return false;
+    if (tbody.dataset?.gardenId !== "tables.body") return false;
+    for (const id of TICKET_TABLE_VALIDATORS) {
+      if (tbody.querySelector(`[data-test-id="${id}"]`)) return true;
+    }
+    return false;
+  }
+
+  // Normalises a header label for use in compound column keys. Lower-case,
+  // trimmed, whitespace collapsed; intentionally locale-insensitive (we
+  // only collapse whitespace, not strip accents).
+  function normalizeHeaderLabel(label) {
+    return String(label || "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 80);
+  }
+
+  // Deterministic fingerprint for the current column layout. Built from
+  // the ordered list of (data-test-id || label) per column. Used as a
+  // namespace for column keys that have no stable per-tenant identity,
+  // so hide rules created on view A do not bleed into view B with a
+  // different layout.
+  function computeLayoutFingerprint(headers) {
+    if (!Array.isArray(headers) || !headers.length) return "empty";
+    const parts = headers.map((h) => {
+      const testId = h.dataTestId || "";
+      const label = normalizeHeaderLabel(h.label || "");
+      return `${testId}#${label}`;
+    });
+    // Tiny FNV-1a hash — keeps the fingerprint short and avoids quoting issues.
+    let hash = 0x811c9dc5;
+    const str = parts.join("|");
+    for (let i = 0; i < str.length; i++) {
+      hash ^= str.charCodeAt(i);
+      hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+    }
+    return hash.toString(36);
+  }
+
+  /**
+   * Derive a stable, scoped column key for hide/style settings.
+   *
+   * Resolution order (audit-driven):
+   *   1. Canonical Zendesk semantic test-id (CANONICAL_TICKET_TEST_IDS) — applies across all tenants/views.
+   *   2. Custom-field test-id (`ticket-table-cells-custom-field-<id>`) — tenant-scoped (stored in tenant's profile only).
+   *   3. Ambiguous generic test-id (AMBIGUOUS_TICKET_TEST_IDS) — compound with header label to keep distinct columns separate.
+   *   4. No usable test-id — layout-scoped key tied to the current fingerprint.
+   *
+   * Header and matching body cell get the same key annotation.
+   */
+  function deriveColumnKey({ dataTestId, headerLabel, columnIndex, layoutFingerprint }) {
+    const tid = typeof dataTestId === "string" && dataTestId.length ? dataTestId : null;
+    const normLabel = normalizeHeaderLabel(headerLabel || "");
+
+    if (tid && CANONICAL_TICKET_TEST_IDS.has(tid)) return tid;
+    if (tid && tid.startsWith("ticket-table-cells-custom-field-")) return tid;
+    if (tid && AMBIGUOUS_TICKET_TEST_IDS.has(tid)) {
+      return `${tid}|label:${normLabel}`;
+    }
+    if (tid) return `${tid}|label:${normLabel}`;
+    return `layout:${layoutFingerprint || "empty"}|idx:${columnIndex}|label:${normLabel}`;
+  }
+
+  // Resolves the effective regex list for SLA / group parsers — user
+  // overrides (in classifiers.slaPatterns/groupParsers) override defaults
+  // when non-empty; otherwise the English defaults apply. Returns
+  // compiled RegExp objects ready to test().
+  function resolveSlaPatterns(classifiers) {
+    const list = (Array.isArray(classifiers?.slaPatterns) && classifiers.slaPatterns.length)
+      ? classifiers.slaPatterns
+      : DEFAULT_SLA_PATTERNS;
+    return list.map(p => {
+      try { return { re: new RegExp(p.pattern, p.flags || "i"), bucket: p.bucket }; }
+      catch { return null; }
+    }).filter(Boolean);
+  }
+  function resolveGroupParsers(classifiers) {
+    const list = (Array.isArray(classifiers?.groupParsers) && classifiers.groupParsers.length)
+      ? classifiers.groupParsers
+      : DEFAULT_GROUP_PARSERS;
+    return list.map(p => {
+      try { return { re: new RegExp(p.pattern, p.flags || "i"), groupField: p.groupField }; }
+      catch { return null; }
+    }).filter(Boolean);
+  }
+
+  // Resolves a raw status value to its semantic bucket — checking user
+  // mappings first, then English defaults. Returns null if unmappable
+  // (so the row gets no color — the audit's "degrade to no-color" rule).
+  function classifyStatus(rawValue, classifiers) {
+    if (!rawValue || typeof rawValue !== "string") return null;
+    const norm = rawValue.trim().toLowerCase();
+    const userMap = classifiers?.statusByRaw || {};
+    if (Object.prototype.hasOwnProperty.call(userMap, norm)) {
+      const v = userMap[norm];
+      return v == null ? null : v;   // tombstone yields null
+    }
+    const defaultBucket = DEFAULT_STATUS_RAW_TO_BUCKET[norm];
+    return defaultBucket ? { bucket: defaultBucket, color: null } : null;
+  }
+
+  function classifyPriority(rawValue, classifiers) {
+    if (!rawValue || typeof rawValue !== "string") return null;
+    const norm = rawValue.trim().toLowerCase();
+    const userMap = classifiers?.priorityByRaw || {};
+    if (Object.prototype.hasOwnProperty.call(userMap, norm)) {
+      const v = userMap[norm];
+      return v == null ? null : v;
+    }
+    // Generic English priority defaults — these are widely-used Zendesk
+    // standards; non-English tenants need a user-provided mapping.
+    const generic = { urgent: "urgent", high: "high", normal: "normal", low: "low" }[norm];
+    return generic ? { bucket: generic, color: null } : null;
+  }
+
+  function effectiveBucketColor(category, bucket, classifiers) {
+    if (!bucket) return null;
+    const override = classifiers?.bucketColors?.[category]?.[bucket];
+    if (override === null) return null;             // tombstone
+    if (typeof override === "string" && override) return override;
+    return DEFAULT_BUCKET_COLORS?.[category]?.[bucket] || null;
+  }
+
   /* ============================= exports ============================== */
 
   window.ZVT = Object.freeze({
     // Constants
-    SELECTORS, PREFIXES, RE,
+    SELECTORS, TICKET_SELECTORS, PREFIXES, RE,
     SECTION_STRATEGY, SECTION_NAMES,
-    LEVEL_TOKEN_RANGES, GLOBAL_TOKEN_RANGES,
-    INTRINSIC_LEVEL, INTRINSIC_GLOBAL,
+    LEVEL_TOKEN_RANGES, GLOBAL_TOKEN_RANGES, TICKET_DENSITY_RANGES,
+    INTRINSIC_LEVEL, INTRINSIC_GLOBAL, INTRINSIC_TICKETS,
+    CANONICAL_TICKET_TEST_IDS, AMBIGUOUS_TICKET_TEST_IDS, TICKET_TABLE_VALIDATORS,
+    SEMANTIC_STATUS_BUCKETS, SEMANTIC_SLA_BUCKETS, SEMANTIC_PRIORITY_BUCKETS,
+    DEFAULT_STATUS_RAW_TO_BUCKET, DEFAULT_BUCKET_COLORS,
+    DEFAULT_SLA_PATTERNS, DEFAULT_GROUP_PARSERS,
+    ALLOWED_REFRESH_INTERVALS,
     DEFAULT_PREFS, DEFAULT_HIDE, DEFAULT_DENSITY,
     DEFAULT_ORDER, DEFAULT_THEME, DEFAULT_CUSTOM_VIEWS,
+    DEFAULT_TICKET_PREFS, DEFAULT_TICKET_DENSITY, DEFAULT_TICKET_THEME,
+    DEFAULT_TICKET_HIDE, DEFAULT_TICKET_CLASSIFIERS, DEFAULT_TICKET_AUTO_REFRESH,
     RESERVED_PROFILE_ID,
     // Classes / functions
     ProfileStore,
@@ -697,5 +1195,9 @@
     loadProfileIndex, ensureProfileExists, deleteProfile,
     recordKnownHost, loadKnownHosts,
     profileHasAnySettings, migrateProfileIndexV07,
+    // Ticket-list helpers
+    isTicketTable, normalizeHeaderLabel, computeLayoutFingerprint, deriveColumnKey,
+    resolveSlaPatterns, resolveGroupParsers,
+    classifyStatus, classifyPriority, effectiveBucketColor,
   });
 })();
