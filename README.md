@@ -1,18 +1,20 @@
 # Zendesk Sidebar Customizer
 
-A browser extension (Manifest V3) for total control over the **Views sidebar** in Zendesk Support. Works in **Chromium browsers** (Chrome, Edge, Brave, Arc, Vivaldi) and **Firefox**.
+A browser extension (Manifest V3) for total control over the **Views sidebar** AND the **ticket-list table** in Zendesk Support. Works in **Chromium browsers** (Chrome, Edge, Brave, Arc, Vivaldi) and **Firefox**.
 
 - 🪪 **Per-tenant profiles** — different settings per Zendesk subdomain. New tenants inherit from a `default` profile until you fork.
-- 🎚️ **Per-level density** — independently set font size, padding, indent, etc. for each nesting level. Live preview via sliders.
+- 🎚️ **Per-level sidebar density** — independently set font size, padding, indent, etc. for each nesting level. Live preview via sliders.
 - 🎨 **Color theming** — palette tokens for background, hover, selected, focus, badge, and per-level color overrides.
 - ✨ **Per-view styling** — background color, text color, font weight, italic, padding, and a custom title prefix per individual view.
 - 🙈 **Hide views and groups** — uncheck a view to hide it; uncheck a group to hide its entire subtree.
-- 🔀 **Reorder anything** — drag-and-drop or arrow keys. Pick CSS reorder (visual, robust) or DOM reorder (structural, experimental, fixes keyboard tab order).
-- 📦 **Templates** — built-ins (Compact / Comfortable / Dark accent) plus your own saved templates. Apply partially (e.g. just the theme) or full overwrite.
-- 🛡️ **Resilient** — primary `data-test-id` selectors with shape-detection fallback. Health pill in the popup warns if Zendesk's DOM changes.
+- 🔀 **Reorder anything** — drag-and-drop or arrow keys. Pick CSS reorder (visual, robust) or DOM reorder (structural, experimental).
+- 🎟️ **Ticket-list customization (v0.9)** — density tokens for the ticket table, hide columns, color rows by status / SLA / priority, auto-refresh, theme overrides. All columns/statuses are auto-discovered per tenant.
+- 📦 **Templates** — built-ins (Compact / Comfortable / Dark accent / Tickets — high density / Lovely-like / SLA war room) plus your own saved templates. Apply partially or full overwrite.
+- 🛡️ **Resilient** — `data-test-id` and `data-garden-id` selectors with shape-detection fallback. Health pill in the popup warns if Zendesk's DOM changes.
+- 🌍 **Locale-aware** — English defaults for status / SLA / priority classification, with user-editable regex patterns for other locales. Non-English values stay unclassified (no color) until you map them; never misclassified.
 - 💾 **Portable** — export each profile to JSON, import on another machine.
 
-Works on any Zendesk Support tenant (`*.zendesk.com`). Settings sync across devices via the browser's built-in extension storage sync.
+Works on any Zendesk Support tenant (`*.zendesk.com`). Settings sync across devices via the browser's built-in extension storage sync. No network requests, no analytics, no data collection.
 
 ## Install
 
@@ -151,8 +153,40 @@ Searchable list of every discovered view. Click a row to expand the editor:
 #### Reorder
 Pick a container from the dropdown. Items in your custom order are marked *pinned*; everything else follows Zendesk's intrinsic order. Drag-and-drop or use the up/down arrows. Reset per container or all-at-once.
 
+### Ticket list (v0.9)
+
+The same per-profile, per-tenant model extended to the ticket-list table — the page at `/agent/filters/<view-id>`, the dashboard, organization ticket lists, user request lists, and any other Zendesk page that renders the Garden ticket table. Detection is by structure, not by URL; if Zendesk ships a new ticket-list page tomorrow, it'll be customized too.
+
+#### Ticket list › Master toggles
+Five independent switches: extension on/off for tickets, compact mode (density), theme overrides, row colors, hide list active. Each section's UI is gated on its toggle.
+
+#### Ticket list › Density
+Eight sliders: row min-height, row font size, cell padding (top/bottom/left/right), header min-height, header font size. Live preview to any open tab on this tenant. Presets: Ultra compact / Compact / Comfortable / Zendesk default / Clear all. Empty values fall through to Zendesk's intrinsic values, shown next to each slider.
+
+#### Ticket list › Columns
+Auto-discovered list of every column ever seen on this tenant — canonical Zendesk columns (Status, SLA, Subject, Assignee, ID), custom-field columns (each tenant's are different), and generic columns (date, etc.) compound-keyed with their visible label so e.g. "Requested" and "Updated" stay distinct. Each column shows a scope chip: `global` (applies across all tenants), `tenant` (custom field — stays on this tenant), `label` (compound key), or `layout` (only when the table has this exact column layout). The audit-driven scoping prevents a column hide in view A from accidentally hiding a different column in view B.
+
+#### Ticket list › Colors
+Three categorical dimensions, all driven by RAW observations from this tenant:
+- **Status mappings** — each raw `aria-label` value seen on a status badge appears with a dropdown to assign a semantic bucket (open/pending/solved/new/onHold/closed) and a color override. English values auto-classify with sensible defaults; non-English values stay unclassified until you map them, never misclassified.
+- **Priority mappings** — same as status but discovered from group rows when grouping is on (open a view grouped by priority to populate).
+- **SLA patterns** — editable list of regex patterns matched against each SLA cell's text. Defaults match English Zendesk strings ("Breached by …", "… till breach"). Add patterns for your locale; restore English defaults with one click.
+- **Bucket colors** — per-bucket color override that applies on top of every raw value mapped to that bucket. Empty = use built-in default.
+
+#### Ticket list › Auto-refresh
+Periodically clicks Zendesk's own refresh button (scoped to the managed table — not a document-wide click, not a full page reload). Pauses when the tab is in the background and when you have any row checkboxes selected so bulk-action workflow isn't interrupted. Optional countdown pill in the lower-right corner of the table. Intervals: 15s / 30s / 60s / 2m / 5m.
+
+#### Ticket list › Theme
+Color overrides for the table: header background, header text, row hover background, selected-row background, group-header background and text. Active when *Theme overrides* is on at the top.
+
 #### Templates
-Built-in starter templates (Compact / Comfortable / Dark accent) and your own saved templates. Save the current profile as a named template (pick which sections to include — defaults to density + theme). Apply with partial overwrite (just the included sections) or full overwrite (every section, including hide and order). Export / import templates as JSON.
+Built-in starter templates and your own saved templates. Built-ins:
+- **Compact / Comfortable / Dark accent** — sidebar density/theme presets.
+- **Tickets — high density** — compact density for the ticket table only; leaves sidebar untouched.
+- **Lovely-like** — inspired by [Lovely Views](https://www.lovestockleaf.com/zendesk-apps/lovely-views): compact density + status/SLA colors + auto-refresh 30s. Doesn't replicate the Marketplace-only features (AI summaries, advanced search, bookmarks).
+- **SLA war room (preview)** — bold breached/at-risk highlighting + 15s refresh. Opens a column preview before hiding anything; pre-checks custom-field columns so business-critical data doesn't silently vanish.
+
+Save the current profile as a named template, apply partially (just the included sections), or full overwrite. Export / import as JSON; v0.6/0.7/0.8/0.9 templates are all compatible.
 
 #### Backup & diagnostics
 Export this profile to JSON, import it back, or reset everything on this profile. Diagnostics dump shows counts, fork state per section, summary of each section's contents, and selector health.
@@ -202,13 +236,26 @@ The popup health pill shows ⚠ when shape-detection is in use (means Zendesk ch
 
 #### `chrome.storage.sync` (small, syncs across devices)
 ```
-profileIndex          { profiles: ["default", "acme.zendesk.com", ...] }
-prefs:default         { enabled, compact, themed, reorderEnabled, reorderMode }
-prefs:<host>          partial overrides
-theme:default         { palette: {...}, level: {...} }
+profileIndex                 { profiles: ["default", "acme.zendesk.com", ...] }
+knownZendeskHosts            tenants the user has visited but doesn't have a profile for
+prefs:default                { enabled, compact, themed, reorderEnabled, reorderMode }
+prefs:<host>                 partial overrides
+theme:default                { palette: {...}, level: {...} }
 theme:<host>
-density:default       { level: {...}, global: {...} }
+density:default              { level: {...}, global: {...} }
 density:<host>
+
+# v0.9 — ticket-list sections
+ticketPrefs:default          { enabled, compact, themed, colorsEnabled, hideEnabled }
+ticketPrefs:<host>
+ticketDensity:default        { rowMinHeight, cellPaddingTop/Bottom/Left/Right, ... }
+ticketDensity:<host>
+ticketTheme:default          { headerBg, headerFg, rowHoverBg, rowSelectedBg, ... }
+ticketTheme:<host>
+ticketClassifiers:default    { statusByRaw, priorityByRaw, slaPatterns, groupParsers, bucketColors }
+ticketClassifiers:<host>
+ticketAutoRefresh:default    { enabled, intervalSec, pauseOnSelected, showIndicator }
+ticketAutoRefresh:<host>
 ```
 
 #### `chrome.storage.local` (per-device, generous)
@@ -220,10 +267,21 @@ order:<host>                     replace, not merge
 customViews:default              { "<viewId>": { bgColor, fgColor, ... } }
 customViews:<host>               replace, not merge
 
+# v0.9 — ticket hide list (column keys can be tenant-scoped, so local-only)
+ticketHide:default               { cols: {} }
+ticketHide:<host>                { cols: { "<columnKey>": true } }
+
 discoveredViews:<profileId>       discovered sidebar catalog (per profile)
 discoveredGroups:<profileId>
 discoveredContainers:<profileId>
 selectorHealth:<profileId>
+
+# v0.9 — per-tenant ticket observations (raw values; classified at render time)
+tenantData:<host>                 { ticketObservations: {
+                                      statusesRaw, slaRaw, groupHeaders,
+                                      ticketColumns, columnLayouts
+                                  } }
+
 editingProfileId                  options-page UI state
 templates                         user-saved templates
 lastZendeskHost, lastZendeskUrl   most recently visited tenant
@@ -237,14 +295,45 @@ If Zendesk changes their DOM:
 1. On a Zendesk page, open devtools and inspect `window.__zvt`. Properties:
    - `profileId` — which profile this tab is using
    - `pane` — detected pane element (or `null`)
-   - `views`, `groups`, `containers` — discovered catalog
-   - `prefs`, `hide`, `density`, `order`, `theme`, `customViews` — current settings (preview-aware)
+   - `views`, `groups`, `containers` — discovered sidebar catalog
+   - `prefs`, `hide`, `density`, `order`, `theme`, `customViews` — current sidebar settings (preview-aware)
+   - `tickets` — ticket-list runtime snapshot (count of managed tables, auto-refresh state, observation counts)
+   - `ticketObservations` — the raw per-tenant observations the options page reads
    - `health` — pane found? counts? selector in use? DOM-reorder kill-switch state?
    - `selectors`, `prefixes` — the SELECTORS / PREFIXES config
    - `rescan()` — force a re-scan
    - `export()` — return full JSON dump
 2. If primary selectors stop matching, shape-detection kicks in. Confirm via `__zvt.health.paneViaShape`.
-3. To override selectors: edit `SELECTORS` / `PREFIXES` at the top of `src/lib.js` and reload the extension.
+3. To override sidebar selectors: edit `SELECTORS` / `PREFIXES` at the top of `src/lib.js` and reload.
+4. To override ticket-list selectors: edit `TICKET_SELECTORS` in `src/lib.js`.
+
+### Calibrating ticket-list intrinsic values
+
+If Zendesk ships padding/sizing changes that throw off the "Zendesk default" preset, paste this on a ticket-list page (`/agent/filters/<view-id>`) to remeasure:
+
+```js
+(async () => {
+  const tbody = document.querySelector('tbody[data-garden-id="tables.body"]');
+  if (!tbody) { console.log("no ticket table on this page"); return; }
+  const px = s => parseFloat(s) || 0;
+  const med = a => { const s = a.filter(Number.isFinite).slice().sort((x,y)=>x-y); return s.length ? s[s.length>>1] : null; };
+  const rows = [...tbody.querySelectorAll('tr[data-test-id="generic-table-row"]')].slice(0, 30);
+  const rowMetrics = rows.map(r => { const c = getComputedStyle(r); return { h: r.getBoundingClientRect().height, f: px(c.fontSize), lh: px(c.lineHeight) }; });
+  const cells = rows.flatMap(r => [...r.children]).slice(0, 50);
+  const cellMetrics = cells.map(c => { const cs = getComputedStyle(c); return { pt: px(cs.paddingTop), pb: px(cs.paddingBottom), pl: px(cs.paddingLeft), pr: px(cs.paddingRight) }; });
+  console.log("INTRINSIC_TICKETS = {");
+  console.log("  rowMinHeight:", Math.round(med(rowMetrics.map(m => m.h))));
+  console.log("  rowFontSize:",  med(rowMetrics.map(m => m.f)));
+  console.log("  rowLineHeight:", med(rowMetrics.map(m => m.lh)));
+  console.log("  cellPaddingTop:",    med(cellMetrics.map(m => m.pt)));
+  console.log("  cellPaddingBottom:", med(cellMetrics.map(m => m.pb)));
+  console.log("  cellPaddingLeft:",   med(cellMetrics.map(m => m.pl)));
+  console.log("  cellPaddingRight:",  med(cellMetrics.map(m => m.pr)));
+  console.log("}");
+})();
+```
+
+Update the `INTRINSIC_TICKETS` constant in `src/lib.js`, reload the extension, and your "Zendesk default" preset will be accurate again.
 
 ## Permissions
 
@@ -255,9 +344,9 @@ If Zendesk changes their DOM:
 ## Privacy
 
 - This extension makes **no network requests** of its own.
-- Per-profile settings stay in your browser. Sync sections (`prefs`, `theme`, `density`) sync via the browser's built-in extension storage sync (Chrome Sync on Chromium, Firefox Sync on Firefox). Per-device sections (`hide`, `order`, `customViews`) never leave the local machine.
-- View IDs and titles in the discovered catalog stay local.
-- Templates you export contain whatever sections you include. If you include `customViews` and use the (future) custom-label feature, that text would be in the export — be aware before sharing.
+- Per-profile settings stay in your browser. Sync sections (`prefs`, `theme`, `density`, `ticketPrefs`, `ticketDensity`, `ticketTheme`, `ticketClassifiers`, `ticketAutoRefresh`) sync via the browser's built-in extension storage sync (Chrome Sync on Chromium, Firefox Sync on Firefox). Per-device sections (`hide`, `order`, `customViews`, `ticketHide`) never leave the local machine.
+- View IDs, view titles, and ticket column catalogs in the discovered catalog stay local. Status / SLA / priority observations are raw values from your tenant's tickets, stored only on this device.
+- Templates you export contain whatever sections you include. If you include `ticketClassifiers`, your color mappings for tenant-specific status / priority values (potentially including custom statuses) will be in the export — be aware before sharing publicly.
 
 ## Development
 
@@ -265,16 +354,17 @@ The whole extension is plain HTML / CSS / JavaScript — no build step.
 
 ```
 src/
-  lib.js              Shared module: SELECTORS, SECTION_STRATEGY, ProfileStore, helpers
-  content.js          Per-tab profile + STYLESHEETS registry + discovery + live preview
+  lib.js              Shared module: SELECTORS, TICKET_SELECTORS, SECTION_STRATEGY, ProfileStore, helpers
+  tickets.js          Ticket-list table discovery + annotation + auto-refresh (v0.9)
+  content.js          Per-tab profile + STYLESHEETS registry + sidebar discovery + live preview
   compact.css         Static baseline gated on body.zvt-compact
-  options.html        Options page markup (8 sections + sticky nav)
+  options.html        Options page markup (14 sections + sticky nav)
   options.css         Options page styles
   options.js          Section renderers + slider/color factory + profile switcher + templates
   popup.html          Browser-action popup
   popup.css           Popup styles
   popup.js            Popup logic + tenant detection + health pill
-manifest.json         MV3 manifest (lib.js loaded BEFORE content.js)
+manifest.json         MV3 manifest (load order: lib → tickets → content)
 icons/                16/48/128 PNG icons
 ```
 
@@ -286,6 +376,7 @@ To iterate locally:
 Validation:
 ```sh
 node --check src/lib.js
+node --check src/tickets.js
 node --check src/content.js
 node --check src/options.js
 node --check src/popup.js
@@ -321,6 +412,7 @@ After loading the extension:
 - v0.6.x — Per-tenant profiles, color theming, per-view styling, DOM reorder mode, templates, real Zendesk intrinsic value calibration.
 - v0.7.0 — Live tab tracking, per-tab pill row, "Shared defaults" catalog source. Cleaned profile model — visited tenants no longer auto-create profiles.
 - v0.8.0 — Firefox support (≥128) via single manifest. No build step.
+- v0.9.0 — Ticket-list customization (Lovely-like): density tokens, hide columns (with tenant/layout scope), color rows by status/SLA/priority, auto-refresh, theme overrides. Fully dynamic — columns and statuses auto-discovered per tenant; locale-aware classification with English defaults and user-editable regex patterns.
 
 ## Contributing
 
