@@ -1172,18 +1172,23 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       const popup = document.createElement("div");
       popup.setAttribute("data-zvt-hover-popup", "1");
       const D = Z.DEFAULT_TICKET_HOVER;
-      const maxW = settings.ticketHover?.maxWidthPx || D.maxWidthPx;
-      const maxHvh = settings.ticketHover?.maxHeightVh || D.maxHeightVh;
-      // Cap the popup at BOTH the configured maxHeight AND a hard
-      // viewport-relative ceiling so it never overflows the screen.
-      // The 32px margin matches the 16px margin we leave on each side
-      // in repositionPopup so the popup always stays within visible
-      // bounds even on short windows.
+      const h = settings.ticketHover || D;
+      // Width strategy (v0.10.4): dynamic viewport-relative width with
+      // a pixel cap so the popup scales with the user's window size.
+      //   width: <widthVw>vw, capped at the smaller of:
+      //     • the legacy maxWidthPx setting if user set one (back-compat)
+      //     • the new widthCapPx setting (default 1800)
+      //     • viewport width minus 32px margin
+      // The result is always a meaningful slice of the user's screen,
+      // never a fixed pixel value that ignores their monitor size.
+      const widthVw = h.widthVw || D.widthVw;
+      const cap = h.maxWidthPx != null ? h.maxWidthPx : (h.widthCapPx || D.widthCapPx);
+      const maxHvh = h.maxHeightVh || D.maxHeightVh;
       const safeHeight = `min(${maxHvh}vh, calc(100vh - 32px))`;
+      const safeWidth  = `min(${widthVw}vw, ${cap}px, calc(100vw - 32px))`;
       Object.assign(popup.style, {
         position: "fixed",
-        width: `${maxW}px`,
-        maxWidth: "calc(100vw - 32px)",
+        width: safeWidth,
         maxHeight: safeHeight,
         background: theme.popupBg,
         color: theme.popupFg,
@@ -1260,8 +1265,14 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
      */
     repositionPopup(popup, anchorRect) {
       const margin = 16;
-      const w = popup.offsetWidth || (settings.ticketHover?.maxWidthPx || Z.DEFAULT_TICKET_HOVER.maxWidthPx);
-      const h = popup.offsetHeight || 400;
+      // Use the rendered width when available; otherwise estimate a safe
+      // width using the same formula as createPopup.
+      const D = Z.DEFAULT_TICKET_HOVER;
+      const h = settings.ticketHover || D;
+      const cap = h.maxWidthPx != null ? h.maxWidthPx : (h.widthCapPx || D.widthCapPx);
+      const fallbackW = Math.min((h.widthVw || D.widthVw) / 100 * window.innerWidth, cap, window.innerWidth - 32);
+      const w = popup.offsetWidth || fallbackW;
+      const hPx = popup.offsetHeight || 400;
 
       let left, top;
       top = anchorRect.top;
@@ -1279,7 +1290,7 @@ nav:has(> [data-garden-id^="cursor_pagination"]) {
       // natural height isn't measurable yet, use the viewport-safe
       // ceiling as the worst case.
       const safeMaxH = window.innerHeight - 2 * margin;
-      const effectiveH = Math.min(h || safeMaxH, safeMaxH);
+      const effectiveH = Math.min(hPx || safeMaxH, safeMaxH);
       if (left + w > window.innerWidth - margin) left = window.innerWidth - w - margin;
       if (left < margin) left = margin;
       if (top + effectiveH > window.innerHeight - margin) {
