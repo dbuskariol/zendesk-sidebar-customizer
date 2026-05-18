@@ -567,6 +567,20 @@
     if (!prefs?.enabled) return "";
     const h = settings.ticketHover;
     if (!h?.enhanced) return "";
+
+    // When sticky is on, our HoverPreviewEnhancer fully replaces
+    // Zendesk's tooltip. Hide Zendesk's own popup entirely so it never
+    // flashes alongside ours.
+    if (h.sticky) {
+      return `
+[data-test-id="ticket_table_tooltip"]:not([data-zvt-hover-popup]),
+[data-garden-id="modals.tooltip_dialog.backdrop"] {
+  display: none !important;
+}
+      `.trim();
+    }
+
+    // Without sticky: just resize Zendesk's built-in tooltip in place.
     const w = Math.round(h.maxWidthPx || Z.DEFAULT_TICKET_HOVER.maxWidthPx);
     const vh = Math.round(h.maxHeightVh || Z.DEFAULT_TICKET_HOVER.maxHeightVh);
     const scrollCommentsBlock = h.scrollComments
@@ -576,7 +590,7 @@
 }`
       : "";
     return `
-[data-test-id="ticket_table_tooltip"]:not([data-zvt-hover-clone]) {
+[data-test-id="ticket_table_tooltip"] {
   max-width: ${w}px !important;
   min-width: ${Math.min(w, 480)}px !important;
   max-height: ${vh}vh !important;
@@ -590,9 +604,11 @@ ${scrollCommentsBlock}
   }
 
   /**
-   * When infinite-scroll is on AND hidePaginator is on, hide Zendesk's
-   * Next/Previous buttons. The scroll listener auto-clicks Next so the
-   * paginator's main job is no longer needed.
+   * When infinite-scroll is on AND hidePaginator is on, hide every
+   * Zendesk pagination control — Next, Previous, First, Last, page
+   * numbers, AND the wrapping cursor-pagination container that holds
+   * them. The scroll listener auto-advances pages so the paginator's
+   * job is no longer needed.
    */
   function buildPaginationSheet() {
     const prefs = settings.ticketPrefs;
@@ -600,8 +616,13 @@ ${scrollCommentsBlock}
     const p = settings.ticketPagination;
     if (!p || p.mode !== "infinite" || !p.hidePaginator) return "";
     return `
-${TICKET_SELECTORS.paginateNext},
-${TICKET_SELECTORS.paginatePrev} {
+[data-test-id^="generic-table-pagination"],
+[data-garden-id^="cursor_pagination"],
+[data-garden-id^="pagination"] {
+  display: none !important;
+}
+nav:has(> [data-test-id^="generic-table-pagination"]),
+nav:has(> [data-garden-id^="cursor_pagination"]) {
   display: none !important;
 }
     `.trim();
@@ -985,313 +1006,432 @@ ${TICKET_SELECTORS.paginatePrev} {
    *     allow-list sanitizer that strips scripts, iframes, on* attrs,
    *     and javascript: URLs before innerHTML insertion.
    */
+  /* ===================== HoverPreviewEnhancer ======================= */
+  /*
+   * Replaces Zendesk's built-in row-hover tooltip with our own popup.
+   *
+   * Why a full replacement rather than enhancing Zendesk's tooltip:
+   *   Zendesk renders the tooltip with React, mounting/unmounting it on
+   *   every row mouseenter/leave. Trying to "clone and pin" it fights
+   *   React's reconciliation — every mouse move re-renders the original,
+   *   our MutationObserver fires, we clone again, dismissing the
+   *   previous clone. Result: endless flicker.
+   *
+   *   Instead, we hide Zendesk's tooltip via CSS entirely and render
+   *   our own popup that we fully control. No React fighting, no
+   *   flicker, sticky by design.
+   *
+   * Behaviour:
+   *   - Mouseenter on a ticket row → 400ms debounce → fetch ticket +
+   *     comments via /api/v2 → render in our popup positioned next to
+   *     the row.
+   *   - Popup stays open until user clicks outside OR presses Esc OR
+   *     hovers a different row.
+   *   - Per-ticket 5-minute cache so re-hovering doesn't re-fetch.
+   */
   class HoverPreviewEnhancer {
     constructor() {
-      this.observer = null;
-      this.clone = null;
-      this.outsideClickHandler = null;
-      this.escKeyHandler = null;
-      this.commentCache = new Map();     // ticketId → { data, at }
-      this.cacheTtlMs = 300_000;          // 5 minutes
+      this.popup = null;
+      this.popupAnchorRow = null;
+      this.pendingHoverTimer = 0;
+      this.boundOver = (e) => this.onOver(e);
+      this.boundOut = (e) => this.onOut(e);
+      this.boundOutsideClick = (e) => this.onOutsideClick(e);
+      this.boundKeydown = (e) => this.onKeydown(e);
+      this.ticketCache = new Map();    // ticketId → { data, at }
+      this.commentCache = new Map();
+      this.cacheTtlMs = 300_000;
+      this.hoverDelayMs = 400;
     }
 
     start() {
-      if (this.observer) return;
-      this.observer = new MutationObserver((muts) => {
-        for (const mut of muts) {
-          for (const node of mut.addedNodes) {
-            if (node.nodeType !== 1) continue;
-            const tooltip = node.matches?.('[data-test-id="ticket_table_tooltip"]')
-              ? node
-              : node.querySelector?.('[data-test-id="ticket_table_tooltip"]');
-            if (tooltip) this.handleTooltipAppeared(tooltip);
-          }
-        }
-      });
-      this.observer.observe(document.body, { childList: true, subtree: true });
+      document.addEventListener("mouseover", this.boundOver, true);
+      document.addEventListener("mouseout", this.boundOut, true);
+      document.addEventListener("mousedown", this.boundOutsideClick, true);
+      document.addEventListener("keydown", this.boundKeydown, true);
     }
 
     stop() {
-      this.observer?.disconnect();
-      this.observer = null;
+      document.removeEventListener("mouseover", this.boundOver, true);
+      document.removeEventListener("mouseout", this.boundOut, true);
+      document.removeEventListener("mousedown", this.boundOutsideClick, true);
+      document.removeEventListener("keydown", this.boundKeydown, true);
       this.dismiss();
+      this.cancelPending();
+      this.ticketCache.clear();
       this.commentCache.clear();
     }
 
-    handleTooltipAppeared(tooltip) {
-      // Only run if BOTH enhanced and sticky are on. Without sticky we
-      // let Zendesk's tooltip behave normally (CSS resize still applies).
-      const h = settings.ticketHover;
-      if (!h?.enhanced || !h?.sticky) return;
-
-      // Wait one frame for Zendesk to fully render the tooltip's
-      // inner content (otherwise we'd clone an empty shell).
-      requestAnimationFrame(() => this.cloneTooltip(tooltip));
+    onOver(e) {
+      const row = e.target?.closest?.(TICKET_SELECTORS.dataRow);
+      if (!row) return;
+      // Already showing for this row — do nothing.
+      if (this.popupAnchorRow === row) return;
+      // Schedule a new popup after debounce.
+      this.cancelPending();
+      this.pendingHoverTimer = setTimeout(() => {
+        this.pendingHoverTimer = 0;
+        this.showFor(row);
+      }, this.hoverDelayMs);
     }
 
-    cloneTooltip(originalTooltip) {
-      if (!document.contains(originalTooltip)) return;
-      this.dismiss();   // any prior clone
+    onOut(e) {
+      // Cancel pending popup if user moves away before it fires.
+      // Once popup is open, mouseout doesn't dismiss — only click-outside / Esc.
+      if (this.popup) return;
+      const row = e.target?.closest?.(TICKET_SELECTORS.dataRow);
+      if (!row) return;
+      this.cancelPending();
+    }
 
-      const rect = originalTooltip.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
+    onOutsideClick(e) {
+      if (!this.popup) return;
+      if (this.popup.contains(e.target)) return;
+      this.dismiss();
+    }
 
-      const clone = document.createElement("div");
-      clone.setAttribute("data-zvt-hover-clone", "1");
-      clone.setAttribute("data-test-id", "ticket_table_tooltip");
-      Object.assign(clone.style, {
+    onKeydown(e) {
+      if (e.key === "Escape" && this.popup) this.dismiss();
+    }
+
+    cancelPending() {
+      if (this.pendingHoverTimer) {
+        clearTimeout(this.pendingHoverTimer);
+        this.pendingHoverTimer = 0;
+      }
+    }
+
+    async showFor(row) {
+      const ticketId = this.extractTicketId(row);
+      if (!ticketId) return;
+      // Dismiss previous popup before showing a new one.
+      this.dismiss();
+
+      const rect = row.getBoundingClientRect();
+      const popup = this.createPopup(rect, ticketId);
+      this.popup = popup;
+      this.popupAnchorRow = row;
+      document.body.appendChild(popup);
+      this.repositionPopup(popup, rect);
+
+      this.populatePopup(popup, ticketId);
+    }
+
+    extractTicketId(row) {
+      const anchor = row.querySelector(TICKET_SELECTORS.ticketAnchor);
+      const href = anchor?.getAttribute("href");
+      if (href) {
+        const m = href.match(/\/agent\/tickets\/(\d+)/);
+        if (m) return m[1];
+      }
+      const idCell = row.querySelector(TICKET_SELECTORS.idCell);
+      if (idCell) {
+        const m = (idCell.innerText || "").match(/#(\d+)/);
+        if (m) return m[1];
+      }
+      return null;
+    }
+
+    createPopup(rowRect, ticketId) {
+      const popup = document.createElement("div");
+      popup.setAttribute("data-zvt-hover-popup", "1");
+      const maxW = settings.ticketHover?.maxWidthPx || 720;
+      const maxH = settings.ticketHover?.maxHeightVh || 80;
+      Object.assign(popup.style, {
         position: "fixed",
-        left: `${rect.left}px`,
-        top: `${rect.top}px`,
-        width: `${rect.width}px`,
+        width: `${maxW}px`,
+        maxWidth: "calc(100vw - 32px)",
+        maxHeight: `${maxH}vh`,
+        background: "white",
+        border: "1px solid rgba(0,0,0,0.15)",
+        borderRadius: "8px",
+        boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
         zIndex: "2147483646",
-        // Inherit Zendesk's tooltip background/border via the styled-
-        // components classes we copy below.
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        font: "13px -apple-system, system-ui, BlinkMacSystemFont, sans-serif",
+        color: "#222",
       });
-      // Copy class list so Zendesk's own styles apply to our clone too.
-      // (StyledTooltipDialog-sc-... etc.) This is mildly fragile across
-      // Zendesk class-hash changes but degrades to "unstyled box" not
-      // "broken UI", and we add our own border as a safety net.
-      clone.className = originalTooltip.className;
-      clone.style.background = clone.style.background || "white";
-      clone.style.border = clone.style.border || "1px solid rgba(0,0,0,0.15)";
-      clone.style.boxShadow = "0 8px 24px rgba(0,0,0,0.18)";
-      clone.style.borderRadius = "8px";
-      clone.style.overflow = "hidden";
-      clone.innerHTML = originalTooltip.innerHTML;
 
-      // Pinned label + close button in the corner.
       const header = document.createElement("div");
       Object.assign(header.style, {
-        position: "absolute", top: "6px", right: "6px",
-        display: "flex", alignItems: "center", gap: "6px",
-        zIndex: "1",
+        display: "flex", alignItems: "center", gap: "8px",
+        padding: "8px 12px",
+        borderBottom: "1px solid rgba(0,0,0,0.08)",
+        background: "rgba(0,0,0,0.025)",
+        flexShrink: "0",
       });
+      const title = document.createElement("a");
+      title.href = `/agent/tickets/${ticketId}`;
+      title.textContent = `Ticket #${ticketId}`;
+      Object.assign(title.style, {
+        fontWeight: "600", color: "#1f73b7", textDecoration: "none",
+      });
+      header.appendChild(title);
       const pinned = document.createElement("span");
       pinned.textContent = "📌 Pinned";
       Object.assign(pinned.style, {
-        background: "rgba(0,0,0,0.78)", color: "#fff",
+        marginLeft: "auto",
         padding: "2px 8px", borderRadius: "10px",
-        font: "11px system-ui, sans-serif", letterSpacing: "0.02em",
+        background: "rgba(0,0,0,0.78)", color: "#fff",
+        font: "11px system-ui, sans-serif",
       });
       header.appendChild(pinned);
       const closeBtn = document.createElement("button");
       closeBtn.type = "button";
-      closeBtn.textContent = "✕";
-      closeBtn.title = "Dismiss pinned preview (Esc)";
       closeBtn.setAttribute("aria-label", "Close pinned preview");
+      closeBtn.title = "Dismiss (Esc)";
+      closeBtn.textContent = "✕";
       Object.assign(closeBtn.style, {
-        width: "24px", height: "24px", border: "none",
-        background: "rgba(0,0,0,0.78)", color: "#fff",
-        borderRadius: "12px", cursor: "pointer",
-        font: "12px system-ui, sans-serif", lineHeight: "1",
+        marginLeft: "6px",
+        width: "24px", height: "24px", lineHeight: "1",
+        border: "none", background: "transparent",
+        color: "#666", cursor: "pointer", fontSize: "14px",
       });
-      closeBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this.dismiss();
-      });
+      closeBtn.addEventListener("click", (e) => { e.stopPropagation(); this.dismiss(); });
       header.appendChild(closeBtn);
-      clone.appendChild(header);
+      popup.appendChild(header);
 
-      // Make the body scroll inside the clone (independent of the
-      // resize stylesheet, so sticky works even without enhanced
-      // resize).
-      const body = clone.querySelector('[data-garden-id="modals.tooltip_dialog.body"]');
-      if (body) {
-        body.style.maxHeight = `min(${settings.ticketHover?.maxHeightVh || 80}vh, calc(100vh - 80px))`;
-        body.style.overflowY = "auto";
-      }
-      const tooltipMaxWidth = settings.ticketHover?.maxWidthPx || 720;
-      if (rect.width < 360 || rect.width > tooltipMaxWidth) {
-        clone.style.width = `${Math.min(tooltipMaxWidth, Math.max(360, rect.width))}px`;
-      }
+      const body = document.createElement("div");
+      body.setAttribute("data-zvt-popup-body", "1");
+      Object.assign(body.style, {
+        padding: "12px 16px", overflowY: "auto", flexGrow: "1",
+      });
+      body.innerHTML = `<div style="color:#888;font-style:italic;padding:8px 0;">Loading ticket #${escapeText(ticketId)}…</div>`;
+      popup.appendChild(body);
 
-      // Reposition if the clone would extend off-screen (the original
-      // tooltip was already positioned by Zendesk but our clone may
-      // be wider/taller now).
-      document.body.appendChild(clone);
-      this.clone = clone;
-      this.repositionClone(clone);
-
-      // Hide Zendesk's own tooltip — visually replaced by our clone.
-      this.hideOriginalTooltips();
-
-      // Outside-click + Esc dismiss
-      setTimeout(() => {
-        this.outsideClickHandler = (e) => {
-          if (!this.clone) return;
-          if (!this.clone.contains(e.target)) this.dismiss();
-        };
-        this.escKeyHandler = (e) => {
-          if (e.key === "Escape") this.dismiss();
-        };
-        document.addEventListener("mousedown", this.outsideClickHandler, true);
-        document.addEventListener("keydown", this.escKeyHandler, true);
-      }, 0);
-
-      // Inject full conversation if enabled.
-      if (settings.ticketHover?.fullConversation) {
-        const ticketId = this.extractTicketId(clone);
-        if (ticketId) this.injectFullConversation(clone, ticketId);
-      }
+      return popup;
     }
 
-    repositionClone(clone) {
-      const r = clone.getBoundingClientRect();
+    repositionPopup(popup, rowRect) {
       const margin = 8;
-      let left = r.left, top = r.top;
-      if (r.right > window.innerWidth - margin) {
-        left = Math.max(margin, window.innerWidth - r.width - margin);
+      const w = popup.offsetWidth || (settings.ticketHover?.maxWidthPx || 720);
+      const h = popup.offsetHeight || 400;
+      // Prefer to the right of the row; if no room, flip to left.
+      let left = rowRect.right + margin;
+      if (left + w > window.innerWidth - margin) {
+        left = Math.max(margin, rowRect.left - w - margin);
       }
-      if (r.bottom > window.innerHeight - margin) {
-        top = Math.max(margin, window.innerHeight - r.height - margin);
+      if (left < margin) left = margin;
+      // Vertically aligned to row top; clamp to viewport.
+      let top = rowRect.top;
+      if (top + h > window.innerHeight - margin) {
+        top = Math.max(margin, window.innerHeight - h - margin);
       }
-      if (left !== r.left) clone.style.left = `${left}px`;
-      if (top !== r.top)  clone.style.top  = `${top}px`;
+      if (top < margin) top = margin;
+      popup.style.left = `${left}px`;
+      popup.style.top = `${top}px`;
     }
 
-    hideOriginalTooltips() {
-      // Hide any Zendesk-rendered ticket tooltip currently in the DOM
-      // (not our clone, which has data-zvt-hover-clone).
-      document.querySelectorAll('[data-test-id="ticket_table_tooltip"]').forEach((el) => {
-        if (el === this.clone) return;
-        if (el.hasAttribute("data-zvt-hover-clone")) return;
-        el.style.visibility = "hidden";
-        el.style.pointerEvents = "none";
-        el.dataset.zvtHidden = "1";
-      });
-      // Also hide the backdrop wrapper if Zendesk uses one.
-      document.querySelectorAll('[data-garden-id="modals.tooltip_dialog.backdrop"]').forEach((el) => {
-        el.style.visibility = "hidden";
-        el.style.pointerEvents = "none";
-        el.dataset.zvtHidden = "1";
-      });
+    async populatePopup(popup, ticketId) {
+      const body = popup.querySelector('[data-zvt-popup-body]');
+      if (!body) return;
+      const fullConv = !!settings.ticketHover?.fullConversation;
+
+      try {
+        // Always fetch ticket details. Fetch comments only if user opted in.
+        const [ticketRes, commentsRes] = await Promise.all([
+          this.fetchTicket(ticketId),
+          fullConv ? this.fetchComments(ticketId) : Promise.resolve(null),
+        ]);
+        // If user moved on or dismissed during the fetch, do nothing.
+        if (this.popup !== popup) return;
+        this.renderPopupContent(body, ticketRes, commentsRes);
+      } catch (e) {
+        if (this.popup !== popup) return;
+        body.innerHTML = `<div style="color:#d33;font-style:italic;padding:8px 0;">Couldn't load: ${escapeText(e?.message || String(e))}</div>`;
+      }
     }
 
-    restoreOriginalTooltips() {
-      document.querySelectorAll('[data-zvt-hidden="1"]').forEach((el) => {
-        el.style.visibility = "";
-        el.style.pointerEvents = "";
-        delete el.dataset.zvtHidden;
-      });
+    renderPopupContent(body, ticketRes, commentsRes) {
+      body.innerHTML = "";
+      const t = ticketRes?.ticket || {};
+      const users = new Map((ticketRes?.users || []).map(u => [u.id, u]));
+      const orgs = new Map((ticketRes?.organizations || []).map(o => [o.id, o]));
+
+      // --- Subject ---
+      const subjEl = document.createElement("div");
+      subjEl.style.cssText = "font-size:15px;font-weight:600;margin-bottom:8px;color:#111;line-height:1.3;";
+      subjEl.textContent = t.subject || "(no subject)";
+      body.appendChild(subjEl);
+
+      // --- Metadata badges ---
+      const metaRow = document.createElement("div");
+      metaRow.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;font-size:11px;margin-bottom:12px;";
+      const badge = (label, color) => {
+        const s = document.createElement("span");
+        s.textContent = label;
+        s.style.cssText = `padding:2px 8px;border-radius:10px;background:${color || "rgba(0,0,0,0.06)"};color:#333;`;
+        return s;
+      };
+      if (t.status)   metaRow.appendChild(badge(`Status: ${t.status}`));
+      if (t.priority) metaRow.appendChild(badge(`Priority: ${t.priority}`));
+      if (t.type)     metaRow.appendChild(badge(`Type: ${t.type}`));
+      if (t.created_at) {
+        const ts = badge(`Created ${formatRelative(t.created_at)}`);
+        ts.title = new Date(t.created_at).toLocaleString();
+        metaRow.appendChild(ts);
+      }
+      if (t.updated_at) {
+        const ts = badge(`Updated ${formatRelative(t.updated_at)}`);
+        ts.title = new Date(t.updated_at).toLocaleString();
+        metaRow.appendChild(ts);
+      }
+      body.appendChild(metaRow);
+
+      // --- Requester / assignee ---
+      const peopleRow = document.createElement("div");
+      peopleRow.style.cssText = "display:flex;gap:14px;font-size:11px;color:#555;margin-bottom:12px;flex-wrap:wrap;";
+      const person = (label, user) => {
+        if (!user) return null;
+        const wrap = document.createElement("div");
+        const lbl = document.createElement("div");
+        lbl.style.cssText = "color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;";
+        lbl.textContent = label;
+        const val = document.createElement("div");
+        val.style.cssText = "color:#222;font-weight:500;font-size:12px;";
+        val.textContent = user.name || `User #${user.id}`;
+        if (user.email) val.title = user.email;
+        wrap.appendChild(lbl);
+        wrap.appendChild(val);
+        return wrap;
+      };
+      const requester = users.get(t.requester_id);
+      const assignee  = users.get(t.assignee_id);
+      const submitter = users.get(t.submitter_id);
+      const org       = orgs.get(t.organization_id);
+      const reqEl = person("Requester", requester); if (reqEl) peopleRow.appendChild(reqEl);
+      const asgEl = person("Assignee", assignee);   if (asgEl) peopleRow.appendChild(asgEl);
+      if (submitter && submitter.id !== requester?.id) {
+        const subEl = person("Submitter", submitter); if (subEl) peopleRow.appendChild(subEl);
+      }
+      if (org) {
+        const wrap = document.createElement("div");
+        wrap.innerHTML = `<div style="color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;">Organization</div>
+                          <div style="color:#222;font-weight:500;font-size:12px;">${escapeText(org.name)}</div>`;
+        peopleRow.appendChild(wrap);
+      }
+      if (peopleRow.children.length) body.appendChild(peopleRow);
+
+      // --- Description / first comment ---
+      if (t.description) {
+        const heading = document.createElement("div");
+        heading.style.cssText = "font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.04em;margin:8px 0 6px;";
+        heading.textContent = "Description";
+        body.appendChild(heading);
+        const descEl = document.createElement("div");
+        descEl.style.cssText = "padding:8px 10px;background:rgba(0,0,0,0.025);border-radius:6px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word;color:#333;margin-bottom:12px;";
+        descEl.textContent = t.description;
+        body.appendChild(descEl);
+      }
+
+      // --- Tags ---
+      if (Array.isArray(t.tags) && t.tags.length) {
+        const tagRow = document.createElement("div");
+        tagRow.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;";
+        for (const tag of t.tags) {
+          const s = document.createElement("span");
+          s.textContent = tag;
+          s.style.cssText = "padding:1px 8px;border-radius:8px;background:#eef2f7;color:#384b5e;font-size:11px;";
+          tagRow.appendChild(s);
+        }
+        body.appendChild(tagRow);
+      }
+
+      // --- Conversation (only if user opted in for fullConversation) ---
+      if (commentsRes) {
+        const heading = document.createElement("div");
+        heading.style.cssText = "font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.04em;margin:8px 0 6px;display:flex;gap:8px;align-items:center;";
+        const comments = commentsRes?.comments || [];
+        const commentUsers = new Map((commentsRes?.users || []).map(u => [u.id, u]));
+        heading.innerHTML = `<span>Conversation</span><span style="text-transform:none;letter-spacing:normal;color:#aaa;font-weight:400;">${comments.length} comment${comments.length === 1 ? "" : "s"}</span>`;
+        body.appendChild(heading);
+        if (!comments.length) {
+          const empty = document.createElement("div");
+          empty.style.cssText = "color:#888;font-style:italic;font-size:12px;";
+          empty.textContent = "(no comments yet)";
+          body.appendChild(empty);
+        } else {
+          const list = document.createElement("div");
+          list.style.cssText = "display:flex;flex-direction:column;gap:8px;";
+          for (const c of comments) list.appendChild(renderCommentCard(c, commentUsers));
+          body.appendChild(list);
+        }
+      }
+
+      // --- Footer: link to full ticket ---
+      const footer = document.createElement("div");
+      footer.style.cssText = "margin-top:12px;padding-top:8px;border-top:1px solid rgba(0,0,0,0.08);text-align:right;";
+      const linkA = document.createElement("a");
+      linkA.href = `/agent/tickets/${t.id || ""}`;
+      linkA.textContent = "Open full ticket →";
+      linkA.style.cssText = "color:#1f73b7;text-decoration:none;font-size:12px;";
+      footer.appendChild(linkA);
+      body.appendChild(footer);
     }
 
     dismiss() {
-      if (this.clone?.parentNode) this.clone.parentNode.removeChild(this.clone);
-      this.clone = null;
-      if (this.outsideClickHandler) {
-        document.removeEventListener("mousedown", this.outsideClickHandler, true);
-        this.outsideClickHandler = null;
-      }
-      if (this.escKeyHandler) {
-        document.removeEventListener("keydown", this.escKeyHandler, true);
-        this.escKeyHandler = null;
-      }
-      this.restoreOriginalTooltips();
+      if (this.popup?.parentNode) this.popup.parentNode.removeChild(this.popup);
+      this.popup = null;
+      this.popupAnchorRow = null;
     }
 
-    extractTicketId(scope) {
-      // Prefer an anchor's href.
-      const a = scope.querySelector('a[href*="/agent/tickets/"]');
-      if (a) {
-        const m = a.getAttribute("href").match(/\/agent\/tickets\/(\d+)/);
-        if (m) return m[1];
-      }
-      // Look for "#<digits>" in any text.
-      const txt = (scope.innerText || "").match(/#(\d+)/);
-      if (txt) return txt[1];
-      return null;
-    }
-
-    async injectFullConversation(scope, ticketId) {
-      const commentsSection = scope.querySelector('[data-test-id="ticket_table_tooltip-comments"]')
-                          || scope.querySelector('[data-garden-id="modals.tooltip_dialog.body"]');
-      if (!commentsSection) return;
-
-      const block = document.createElement("div");
-      block.setAttribute("data-zvt-full-conversation", "1");
-      block.style.cssText = "border-top: 1px solid rgba(0,0,0,0.12); margin-top: 12px; padding-top: 12px; font-size: 12px;";
-
-      const heading = document.createElement("div");
-      heading.style.cssText = "font-weight: 600; color: #444; margin-bottom: 8px; display: flex; align-items: center; gap: 8px;";
-      heading.innerHTML = `<span>Full conversation</span><span style="font-weight:400;color:#888">loading…</span>`;
-      block.appendChild(heading);
-      commentsSection.appendChild(block);
-
-      try {
-        const data = await this.fetchComments(ticketId);
-        const comments = Array.isArray(data?.comments) ? data.comments : [];
-        const usersById = new Map((data?.users || []).map(u => [u.id, u]));
-
-        heading.querySelector("span:last-child").textContent = `${comments.length} comment${comments.length === 1 ? "" : "s"}`;
-
-        if (!comments.length) {
-          const empty = document.createElement("div");
-          empty.style.cssText = "color: #888; font-style: italic;";
-          empty.textContent = "(no comments)";
-          block.appendChild(empty);
-          return;
-        }
-
-        const list = document.createElement("div");
-        list.style.cssText = "display: flex; flex-direction: column; gap: 10px;";
-        for (const c of comments) {
-          list.appendChild(this.renderComment(c, usersById));
-        }
-        block.appendChild(list);
-      } catch (e) {
-        heading.querySelector("span:last-child").innerHTML = `<span style="color:#d33">couldn't load: ${escapeText(e?.message || String(e))}</span>`;
-      }
-    }
-
-    renderComment(comment, usersById) {
-      const card = document.createElement("div");
-      card.style.cssText = "padding: 8px 10px; background: rgba(0,0,0,0.025); border-radius: 6px;";
-      const user = usersById.get(comment.author_id);
-      const isInternal = comment.public === false;
-      const meta = document.createElement("div");
-      meta.style.cssText = "font-size: 11px; color: #666; margin-bottom: 6px; display: flex; gap: 8px; align-items: center;";
-      const who = document.createElement("strong");
-      who.style.color = "#222";
-      who.textContent = user?.name || "Unknown";
-      meta.appendChild(who);
-      const when = document.createElement("span");
-      when.textContent = formatRelative(comment.created_at);
-      when.title = new Date(comment.created_at).toLocaleString();
-      meta.appendChild(when);
-      if (isInternal) {
-        const badge = document.createElement("span");
-        badge.textContent = "internal";
-        badge.style.cssText = "background: #fff4d4; color: #7a5400; padding: 1px 6px; border-radius: 8px; font-size: 10px;";
-        meta.appendChild(badge);
-      }
-      card.appendChild(meta);
-
-      const body = document.createElement("div");
-      body.style.cssText = "font-size: 12px; line-height: 1.5; color: #222; word-wrap: break-word;";
-      body.innerHTML = sanitizeHtml(comment.html_body || comment.body || "");
-      card.appendChild(body);
-      return card;
+    async fetchTicket(ticketId) {
+      const cached = this.ticketCache.get(ticketId);
+      if (cached && Date.now() - cached.at < this.cacheTtlMs) return cached.data;
+      const url = `/api/v2/tickets/${encodeURIComponent(ticketId)}.json?include=users,organizations`;
+      const res = await fetch(url, { credentials: "include", headers: { Accept: "application/json" } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const ct = res.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) throw new Error("unexpected response (logged out?)");
+      const data = await res.json();
+      this.ticketCache.set(ticketId, { data, at: Date.now() });
+      return data;
     }
 
     async fetchComments(ticketId) {
       const cached = this.commentCache.get(ticketId);
       if (cached && Date.now() - cached.at < this.cacheTtlMs) return cached.data;
-
       const url = `/api/v2/tickets/${encodeURIComponent(ticketId)}/comments?include=users&sort_order=asc&per_page=100`;
-      const res = await fetch(url, {
-        credentials: "include",
-        headers: { "Accept": "application/json" },
-      });
+      const res = await fetch(url, { credentials: "include", headers: { Accept: "application/json" } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const ct = res.headers.get("content-type") || "";
-      if (!ct.includes("application/json")) {
-        throw new Error("unexpected response (logged out?)");
-      }
+      if (!ct.includes("application/json")) throw new Error("unexpected response (logged out?)");
       const data = await res.json();
       this.commentCache.set(ticketId, { data, at: Date.now() });
       return data;
     }
+  }
+
+  // Render one comment card. Shared by the popup body.
+  function renderCommentCard(comment, usersById) {
+    const card = document.createElement("div");
+    card.style.cssText = "padding:8px 10px;background:rgba(0,0,0,0.025);border-radius:6px;";
+    const user = usersById.get(comment.author_id);
+    const isInternal = comment.public === false;
+    const meta = document.createElement("div");
+    meta.style.cssText = "font-size:11px;color:#666;margin-bottom:6px;display:flex;gap:8px;align-items:center;";
+    const who = document.createElement("strong");
+    who.style.color = "#222";
+    who.textContent = user?.name || "Unknown";
+    meta.appendChild(who);
+    const when = document.createElement("span");
+    when.textContent = formatRelative(comment.created_at);
+    when.title = new Date(comment.created_at).toLocaleString();
+    meta.appendChild(when);
+    if (isInternal) {
+      const badge = document.createElement("span");
+      badge.textContent = "internal";
+      badge.style.cssText = "background:#fff4d4;color:#7a5400;padding:1px 6px;border-radius:8px;font-size:10px;";
+      meta.appendChild(badge);
+    }
+    card.appendChild(meta);
+    const bodyEl = document.createElement("div");
+    bodyEl.style.cssText = "font-size:12px;line-height:1.5;color:#222;word-wrap:break-word;";
+    bodyEl.innerHTML = sanitizeHtml(comment.html_body || comment.body || "");
+    card.appendChild(bodyEl);
+    return card;
   }
 
   // Minimal HTML sanitiser — strips scripts/styles/iframes, on* attrs,
@@ -1337,30 +1477,192 @@ ${TICKET_SELECTORS.paginatePrev} {
 
   /* ======================== InfiniteScroll =========================== */
   /*
-   * Auto-paginate-on-scroll. When user scrolls within
-   * `bottomThresholdPx` of the bottom of the table's scroll container,
-   * programmatically click the "Next" pagination button. Previous rows
-   * are replaced (Zendesk re-renders the table) — this is NOT true
-   * accumulating infinite scroll, but it removes the click friction.
+   * True accumulating infinite scroll via fetch interception.
    *
-   * Disables itself when the Next button is disabled (last page) or
-   * not found.
+   * The naive approach (clone DOM rows, click Next) doesn't work: React
+   * tears down event handlers on rows it no longer owns, so accumulated
+   * rows become read-only. The only path to fully-interactive
+   * accumulation is to feed Zendesk's React state more tickets at once
+   * — which we do by monkey-patching window.fetch.
+   *
+   * Flow:
+   *   1. On enable, we install a fetch hook (singleton, installed
+   *      once). The hook watches for GET requests to
+   *      /api/v2/views/<id>/tickets... matching the user's current
+   *      view ID.
+   *   2. On the first matching response, we parse the JSON, remember
+   *      the tickets, and pass the response through unmodified.
+   *   3. On scroll near bottom, we click "Next" — Zendesk fetches the
+   *      next page. The hook intercepts that response, merges it with
+   *      the previously-seen tickets (de-duping by ticket ID), and
+   *      returns a merged Response object.
+   *   4. Zendesk's React reconciler sees the existing tickets still
+   *      present (matched by stable ticket ID keys) and KEEPS them
+   *      mounted, just appending the new ones at the bottom. Every
+   *      row is a native Zendesk row — checkboxes work, hover preview
+   *      works, bulk select works, subject clicks navigate via the
+   *      SPA router.
+   *   5. On view change (URL change), we reset the accumulator.
+   *
+   * Caveats documented in the UI:
+   *   - This depends on Zendesk using `fetch` (not XHR) and keying
+   *     React rows by ticket.id. If they change either, infinite
+   *     scroll silently degrades to "doesn't accumulate" — falls back
+   *     to standard pagination behaviour but doesn't break the table.
+   *   - The visible page counter / "X of Y" labels may show stale
+   *     numbers (we hide them via CSS when hidePaginator is on).
    */
+
+  // Single global fetch hook — installed lazily, persists for the page
+  // lifetime. State is in a singleton so the hook closure references
+  // current state rather than a snapshot.
+  const fetchAccumulator = {
+    installed: false,
+    enabled: false,
+    viewId: null,
+    accumulatedTickets: [],
+    knownIds: new Set(),
+    aux: {                    // accumulated user/group/org data
+      users: new Map(),
+      groups: new Map(),
+      organizations: new Map(),
+    },
+    onAccumulate: null,       // callback when new page merged (for indicator)
+  };
+
+  function installFetchHook() {
+    if (fetchAccumulator.installed) return;
+    if (typeof window.fetch !== "function") return;
+    const origFetch = window.fetch.bind(window);
+    window.fetch = async function(input, init) {
+      if (!fetchAccumulator.enabled || !fetchAccumulator.viewId) {
+        return origFetch(input, init);
+      }
+      const url = typeof input === "string" ? input : (input?.url || "");
+      const m = url.match(/\/api\/v2\/views\/(\d+)\/tickets(?:\.json)?/);
+      if (!m || m[1] !== fetchAccumulator.viewId) {
+        return origFetch(input, init);
+      }
+      // It's a view-tickets fetch for the current view. Pass through and
+      // merge the response into our accumulator.
+      const response = await origFetch(input, init);
+      if (!response.ok) return response;
+      const ct = response.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) return response;
+
+      try {
+        const data = await response.clone().json();
+        return mergeIntoAccumulator(data, response);
+      } catch (e) {
+        return response;   // give up on this response, no harm
+      }
+    };
+    fetchAccumulator.installed = true;
+  }
+
+  function mergeIntoAccumulator(data, originalResponse) {
+    let added = 0;
+    if (Array.isArray(data?.tickets)) {
+      for (const t of data.tickets) {
+        if (!t || t.id == null) continue;
+        if (fetchAccumulator.knownIds.has(t.id)) continue;
+        fetchAccumulator.knownIds.add(t.id);
+        fetchAccumulator.accumulatedTickets.push(t);
+        added++;
+      }
+    }
+    // Aux: users/groups/organizations are de-duped by ID.
+    for (const cat of ["users", "groups", "organizations"]) {
+      if (!Array.isArray(data?.[cat])) continue;
+      const map = fetchAccumulator.aux[cat];
+      for (const item of data[cat]) {
+        if (item?.id != null && !map.has(item.id)) map.set(item.id, item);
+      }
+    }
+
+    // If we have multiple pages accumulated, return the merged set so
+    // React renders everything. On the very first fetch (one page in
+    // the accumulator), return original to avoid unnecessary mutation.
+    if (fetchAccumulator.accumulatedTickets.length <= (data?.tickets?.length || 0)) {
+      return originalResponse;
+    }
+
+    const merged = {
+      ...data,
+      tickets: fetchAccumulator.accumulatedTickets.slice(),
+      users:          Array.from(fetchAccumulator.aux.users.values()),
+      groups:         Array.from(fetchAccumulator.aux.groups.values()),
+      organizations:  Array.from(fetchAccumulator.aux.organizations.values()),
+      // Keep the original pagination metadata so React can still
+      // navigate (we hide the UI via CSS anyway, but next/prev links
+      // need to remain valid for our auto-click strategy).
+    };
+    if (fetchAccumulator.onAccumulate) {
+      try { fetchAccumulator.onAccumulate(added, fetchAccumulator.accumulatedTickets.length); }
+      catch (e) {}
+    }
+    return new Response(JSON.stringify(merged), {
+      status: originalResponse.status,
+      statusText: originalResponse.statusText,
+      headers: originalResponse.headers,
+    });
+  }
+
+  function resetAccumulator(viewId) {
+    fetchAccumulator.viewId = viewId || null;
+    fetchAccumulator.accumulatedTickets = [];
+    fetchAccumulator.knownIds = new Set();
+    fetchAccumulator.aux.users.clear();
+    fetchAccumulator.aux.groups.clear();
+    fetchAccumulator.aux.organizations.clear();
+  }
+
   class InfiniteScroll {
     constructor(table) {
       this.table = table;
       this.scrollContainer = null;
       this.boundScroll = () => this.onScroll();
       this.lastClickAt = 0;
-      this.minClickInterval = 800;   // debounce — don't click more than ~1x/sec
+      this.minClickInterval = 1500;
       this.loadingEl = null;
       this.attached = false;
+      this.currentViewId = null;
+      this.lastUrlPath = window.location.pathname;
+      this.urlWatchTimer = 0;
+      this.routeChecker = null;
     }
     attach() {
       if (this.attached) return;
+      this.currentViewId = this.getViewIdFromUrl();
+      if (!this.currentViewId) return;   // not on a filter page; nothing to do
+
       this.scrollContainer = this.findScrollContainer();
       if (!this.scrollContainer) return;
+
+      installFetchHook();
+      fetchAccumulator.enabled = true;
+      resetAccumulator(this.currentViewId);
+      fetchAccumulator.onAccumulate = (added, total) => {
+        if (this.loadingEl) {
+          this.loadingEl.textContent = `Loaded ${added} more (${total} total) — scroll for more`;
+          setTimeout(() => this.removeLoadingIndicator(), 1500);
+        }
+      };
+
       this.scrollContainer.addEventListener("scroll", this.boundScroll, { passive: true });
+      // Watch for SPA navigation so we reset the accumulator when the
+      // user switches to a different view.
+      this.routeChecker = setInterval(() => {
+        if (window.location.pathname !== this.lastUrlPath) {
+          this.lastUrlPath = window.location.pathname;
+          const newViewId = this.getViewIdFromUrl();
+          if (newViewId !== this.currentViewId) {
+            this.currentViewId = newViewId;
+            resetAccumulator(newViewId);
+          }
+        }
+      }, 1000);
+
       this.attached = true;
     }
     detach() {
@@ -1369,9 +1671,17 @@ ${TICKET_SELECTORS.paginatePrev} {
       this.scrollContainer = null;
       this.attached = false;
       this.removeLoadingIndicator();
+      if (this.routeChecker) { clearInterval(this.routeChecker); this.routeChecker = null; }
+      // Leave the fetch hook installed (it's a singleton; cheap no-op
+      // when disabled) but turn off the enable flag so it stops merging.
+      fetchAccumulator.enabled = false;
+      fetchAccumulator.onAccumulate = null;
+    }
+    getViewIdFromUrl() {
+      const m = window.location.pathname.match(/\/agent\/filters\/(\d+)/);
+      return m ? m[1] : null;
     }
     findScrollContainer() {
-      // Walk up from the table looking for an ancestor with overflow:auto/scroll.
       let node = this.table?.parentElement;
       for (let i = 0; node && i < 12; i++, node = node.parentElement) {
         const cs = getComputedStyle(node);
@@ -1390,11 +1700,8 @@ ${TICKET_SELECTORS.paginatePrev} {
       const threshold = ar.bottomThresholdPx || Z.DEFAULT_TICKET_PAGINATION.bottomThresholdPx;
       const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
       if (distanceFromBottom > threshold) {
-        this.removeLoadingIndicator();
         return;
       }
-      // Debounce so we don't trigger multiple clicks per tick or while
-      // the next page is loading.
       if (Date.now() - this.lastClickAt < this.minClickInterval) return;
 
       const nextBtn = document.querySelector(TICKET_SELECTORS.paginateNext);
@@ -1405,6 +1712,9 @@ ${TICKET_SELECTORS.paginatePrev} {
       }
       this.lastClickAt = Date.now();
       this.showLoading();
+      // Click Next; Zendesk fetches the next page; our fetch hook
+      // intercepts and merges into the accumulator; React re-renders
+      // with all accumulated tickets present, fully interactive.
       nextBtn.click();
     }
     showLoading() {
@@ -1412,25 +1722,20 @@ ${TICKET_SELECTORS.paginatePrev} {
         const el = document.createElement("div");
         el.setAttribute("data-zvt", "tickets-infinite-loading");
         Object.assign(el.style, {
-          position: "absolute", left: "50%", bottom: "8px",
-          transform: "translateX(-50%)",
-          padding: "4px 12px", borderRadius: "12px",
-          background: "rgba(21,26,30,0.85)", color: "#fff",
-          font: "11px system-ui, sans-serif", zIndex: "2",
+          position: "fixed",
+          bottom: "16px",
+          right: "16px",
+          padding: "6px 14px",
+          borderRadius: "14px",
+          background: "rgba(21,26,30,0.85)",
+          color: "#fff",
+          font: "11px system-ui, sans-serif",
+          zIndex: "2147483647",
           pointerEvents: "none",
         });
         el.textContent = "Loading next page…";
+        document.body.appendChild(el);
         this.loadingEl = el;
-      }
-      const parent = this.scrollContainer || this.table.parentElement;
-      if (parent && getComputedStyle(parent).position === "static") {
-        // Need a positioned ancestor; fall back to fixed.
-        Object.assign(this.loadingEl.style, {
-          position: "fixed", bottom: "16px", top: "auto",
-        });
-        document.body.appendChild(this.loadingEl);
-      } else if (parent && this.loadingEl.parentNode !== parent) {
-        parent.appendChild(this.loadingEl);
       }
     }
     showAtEnd() {
