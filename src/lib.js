@@ -307,13 +307,12 @@
   // you click outside) + full conversation (fetches ALL comments from
   // /api/v2/tickets/<id>/comments and renders them below the existing
   // Zendesk-shown few).
-  // Lovely-style hover preview defaults (v0.10.0): wider + shorter so it
-  // reads like a slim ticket viewer rather than a tall vertical popup.
-  // User can override via the Hover preview options page.
+  // Lovely-style hover preview defaults (v0.10.3): wider + shorter,
+  // hard-clamped to the viewport so it never overflows the screen.
   const DEFAULT_TICKET_HOVER = Object.freeze({
     enhanced:         false,
-    maxWidthPx:       1100,
-    maxHeightVh:      70,
+    maxWidthPx:       1400,
+    maxHeightVh:      55,
     scrollComments:   true,
     sticky:           false,
     fullConversation: false,
